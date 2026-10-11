@@ -1,8 +1,18 @@
 # Pagloom — Scanner & PDF Utility
 
+[![Latest release](https://img.shields.io/github/v/release/3devangelist/pagloom)](https://github.com/3devangelist/pagloom/releases/latest)
+[![Build](https://github.com/3devangelist/pagloom/actions/workflows/release.yml/badge.svg)](https://github.com/3devangelist/pagloom/actions/workflows/release.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 *Versão em português: [README.pt-PT.md](README.pt-PT.md)*
 
 **Pagloom** is a desktop app for scanning documents, fixing the pages and weaving everything, including existing PDFs, into a single document. The name comes from *page* + *loom*.
+
+**[⬇ Download the latest release](https://github.com/3devangelist/pagloom/releases/latest)** — Windows (`.zip`) and Linux (`.AppImage`).
+
+| Scanning, previous + current page | Cropping a PDF page (stays vector) | Free-angle rotation and export |
+|---|---|---|
+| ![Scanning](docs/scan.png) | ![Cropping](docs/crop.png) | ![Rotation and export](docs/edit-export.png) |
 
 | | |
 |---|---|
@@ -141,6 +151,8 @@ go mod tidy
 go build -trimpath -ldflags "-H windowsgui -s -w" -o Pagloom.exe .
 ```
 
+Releases are built automatically by GitHub Actions (`.github/workflows/release.yml`): push a tag such as `v1.1.0` and the workflow builds the three files and publishes the release.
+
 To try the interface without a scanner, there is a simulated scanner:
 ```bash
 bash fetch-libs.sh
@@ -160,6 +172,8 @@ mock.go            simulated scanner for testing
 web/               interface (index.html, style.css, app.js); web/lib/ is filled by fetch-libs.sh
 fetch-libs.sh      downloads pdf.js and pdf-lib
 build.sh           build and AppImage packaging
+docs/              screenshots and social preview image
+.github/           release workflow and issue templates
 ```
 
 ---
@@ -197,6 +211,7 @@ build.sh           build and AppImage packaging
 ## Ricardo's requests and rules
 
 **Initial request**
+
 1. Sheet-scanning software that uses the **Windows driver directly**.
 2. Show the **previously scanned page**.
 3. Allow **paging forwards and backwards**.
@@ -205,6 +220,7 @@ build.sh           build and AppImage packaging
 6. Something **easy to use whenever needed** (initially, HTML).
 
 **Follow-up requests**
+
 7. A file with a `.html` extension so it could be downloaded.
 8. A Python script to merge all PNGs in a folder into a PDF.
 9. A straight answer, without changing anything: can this work inside the browser?
@@ -221,10 +237,18 @@ build.sh           build and AppImage packaging
 20. **MIT licence**, for publishing on GitHub.
 21. A distinctive name, researched so that it neither exists nor resembles another: **Pagloom** (*page* + *loom*), with the subtitle **Scanner & PDF Utility**.
 22. Documentation in **English**, published on GitHub under the **3devangelist** account.
+23. GitHub extras: automatic release builds (GitHub Actions), screenshots, topics, social preview image, issue templates and a changelog.
 
 **General rules**
+
 - All Portuguese text in **European Portuguese (pt-PT)**, never Brazilian Portuguese.
 - **Direct answers, no gratuitous praise.**
+
+---
+
+## Feedback
+
+Found a bug or have an idea? Open an [issue](https://github.com/3devangelist/pagloom/issues/new/choose). Version history is in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

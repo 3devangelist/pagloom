@@ -2,6 +2,12 @@
 
 *English version: [README.md](README.md)*
 
+**[⬇ Descarregar a versão mais recente](https://github.com/3devangelist/pagloom/releases/latest)** — Windows (`.zip`) e Linux (`.AppImage`).
+
+| Digitalizar, página anterior + atual | Recortar uma página PDF (continua vetorial) | Rotação por ângulo e exportação |
+|---|---|---|
+| ![Digitalizar](docs/scan.png) | ![Recortar](docs/crop.png) | ![Rotação e exportação](docs/edit-export.png) |
+
 **Pagloom** é uma aplicação para digitalizar documentos, editar as páginas e juntar tudo, incluindo PDFs já existentes, num único documento.
 
 | | |
@@ -138,6 +144,8 @@ go mod tidy
 go build -trimpath -ldflags "-H windowsgui -s -w" -o Pagloom.exe .
 ```
 
+As Releases são criadas automaticamente pelo GitHub Actions (`.github/workflows/release.yml`): ao enviar uma tag como `v1.1.0`, o workflow compila os três ficheiros e publica a Release.
+
 Para testar a interface sem scanner, há um scanner simulado:
 ```bash
 bash fetch-libs.sh
@@ -157,6 +165,8 @@ mock.go            scanner simulado para testes
 web/               interface (index.html, style.css, app.js); web/lib/ é preenchida pelo fetch-libs.sh
 fetch-libs.sh      descarrega o pdf.js e o pdf-lib
 build.sh           compilação e criação dos AppImages
+docs/              capturas de ecrã e imagem de pré-visualização
+.github/           workflow de Releases e modelos de Issues
 ```
 
 ---
@@ -194,6 +204,7 @@ build.sh           compilação e criação dos AppImages
 ## Regras e pedidos do Ricardo
 
 **Pedido inicial**
+
 1. Software de digitalização de folhas que use o **driver do Windows diretamente**.
 2. Mostrar a **página anterior digitalizada**.
 3. Poder **passar as páginas para a frente e para trás**.
@@ -202,6 +213,7 @@ build.sh           compilação e criação dos AppImages
 6. Formato **fácil de usar sempre que precisar** (de início, HTML).
 
 **Pedidos seguintes**
+
 7. Ficheiro com extensão `.html` para conseguir descarregar.
 8. Script em Python para juntar os PNG de uma pasta num PDF.
 9. Resposta direta, sem mexer em nada: dá para funcionar dentro do browser?
@@ -219,10 +231,18 @@ build.sh           compilação e criação dos AppImages
 20. **Licença MIT**, para publicar no GitHub.
 21. Nome próprio, pesquisado para não existir nem ser parecido com outro: **Pagloom** (*page* + *loom*, um tear que tece páginas num documento), com o subtítulo **Scanner & PDF Utility**.
 22. Documentação em **inglês**, e publicação no GitHub, na conta **3devangelist**.
+23. Extras no GitHub: compilação automática das Releases (GitHub Actions), capturas de ecrã, tópicos, imagem de pré-visualização, modelos de Issues e changelog.
 
 **Regras gerais**
+
 - Textos sempre em **português europeu (PT-PT)**, nunca em português do Brasil.
 - Respostas **diretas, sem elogios gratuitos**.
+
+---
+
+## Erros e sugestões
+
+Encontraste um erro ou tens uma ideia? Abre uma [issue](https://github.com/3devangelist/pagloom/issues/new/choose). O histórico de versões está no [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
