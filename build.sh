@@ -28,7 +28,7 @@ for PAIR in amd64:x86_64 arm64:aarch64; do
   echo "» Linux ($AA)"
   D=build/AppDir-$AA
   rm -rf "$D"
-  mkdir -p "$D/usr/bin" "$D/usr/share/applications" "$D/usr/share/icons/hicolor/256x256/apps"
+  mkdir -p "$D/usr/bin" "$D/usr/share/applications"
   CGO_ENABLED=0 GOOS=linux GOARCH=$GA go build -trimpath -ldflags "-s -w" -o "$D/usr/bin/pagloom" .
   cat > "$D/pagloom.desktop" <<'EOF'
 [Desktop Entry]
@@ -47,7 +47,12 @@ StartupWMClass=Pagloom
 EOF
   cp "$D/pagloom.desktop" "$D/usr/share/applications/"
   cp pagloom.png "$D/pagloom.png"
-  cp pagloom.png "$D/usr/share/icons/hicolor/256x256/apps/"
+  mkdir -p "$D/usr/share/icons/hicolor/scalable/apps"
+  cp pagloom.svg "$D/usr/share/icons/hicolor/scalable/apps/pagloom.svg"
+  for S in 16 24 32 48 64 128 256 512; do
+    mkdir -p "$D/usr/share/icons/hicolor/${S}x${S}/apps"
+    cp "icons/pagloom-$S.png" "$D/usr/share/icons/hicolor/${S}x${S}/apps/pagloom.png"
+  done
   ln -s pagloom.png "$D/.DirIcon"
   ln -s usr/bin/pagloom "$D/AppRun"
   ARCH=$AA APPIMAGE_EXTRACT_AND_RUN=1 "$TOOLS/appimagetool" --runtime-file "$TOOLS/runtime-$AA" -n "$D" "$OUT/Pagloom-$AA.AppImage" >/dev/null

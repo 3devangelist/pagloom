@@ -1,3 +1,5 @@
+<p align="center"><img src="pagloom.svg" width="128" alt="Pagloom logo"></p>
+
 # Pagloom — Scanner & PDF Utility
 
 [![Latest release](https://img.shields.io/github/v/release/3devangelist/pagloom)](https://github.com/3devangelist/pagloom/releases/latest)
@@ -172,6 +174,8 @@ mock.go            simulated scanner for testing
 web/               interface (index.html, style.css, app.js); web/lib/ is filled by fetch-libs.sh
 fetch-libs.sh      downloads pdf.js and pdf-lib
 build.sh           build and AppImage packaging
+pagloom.svg        logo (source); pagloom.png / pagloom.ico / icons/ are generated from it
+rsrc_windows_amd64.syso  Windows icon resource, linked into Pagloom.exe
 docs/              screenshots and social preview image
 .github/           release workflow and issue templates
 ```
@@ -238,6 +242,7 @@ docs/              screenshots and social preview image
 21. A distinctive name, researched so that it neither exists nor resembles another: **Pagloom** (*page* + *loom*), with the subtitle **Scanner & PDF Utility**.
 22. Documentation in **English**, published on GitHub under the **3devangelist** account.
 23. GitHub extras: automatic release builds (GitHub Actions), screenshots, topics, social preview image, issue templates and a changelog.
+24. A logo (monogram **P** with a woven thread), in SVG, used as the icon of every build.
 
 **General rules**
 

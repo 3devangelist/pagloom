@@ -1,3 +1,5 @@
+<p align="center"><img src="pagloom.svg" width="128" alt="Pagloom logo"></p>
+
 # Pagloom — Scanner & PDF Utility
 
 *English version: [README.md](README.md)*
@@ -165,6 +167,8 @@ mock.go            scanner simulado para testes
 web/               interface (index.html, style.css, app.js); web/lib/ é preenchida pelo fetch-libs.sh
 fetch-libs.sh      descarrega o pdf.js e o pdf-lib
 build.sh           compilação e criação dos AppImages
+pagloom.svg        logotipo (original); pagloom.png / pagloom.ico / icons/ são gerados a partir dele
+rsrc_windows_amd64.syso  recurso de ícone do Windows, incluído no Pagloom.exe
 docs/              capturas de ecrã e imagem de pré-visualização
 .github/           workflow de Releases e modelos de Issues
 ```
@@ -232,6 +236,7 @@ docs/              capturas de ecrã e imagem de pré-visualização
 21. Nome próprio, pesquisado para não existir nem ser parecido com outro: **Pagloom** (*page* + *loom*, um tear que tece páginas num documento), com o subtítulo **Scanner & PDF Utility**.
 22. Documentação em **inglês**, e publicação no GitHub, na conta **3devangelist**.
 23. Extras no GitHub: compilação automática das Releases (GitHub Actions), capturas de ecrã, tópicos, imagem de pré-visualização, modelos de Issues e changelog.
+24. Um logotipo (monograma **P** com um fio entrelaçado), em SVG, usado como ícone em todas as versões.
 
 **Regras gerais**
 

@@ -5,14 +5,15 @@
 <title>Pagloom — Scanner &amp; PDF Utility</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="style.css">
-<link rel="icon" href="icon.png">
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="icon" href="icon.png" type="image/png">
 <script src="lib/pdf-lib.min.js"></script>
 <script type="module" src="app.js"></script>
 </head>
 <body>
 <div id="app">
   <header id="top">
-    <div class="brand">Pagloom <span class="sub">Scanner &amp; PDF Utility</span></div>
+    <div class="brand"><img src="logo.svg" alt="" class="logo">Pagloom <span class="sub">Scanner &amp; PDF Utility</span></div>
     <button id="bScan" class="primary" title="Digitalizar (Espaço)">⎙ Digitalizar</button>
     <button id="bOpen" title="Adicionar PDFs ou imagens (Ctrl+O)">＋ Adicionar PDF / imagens</button>
     <input type="file" id="fileIn" multiple accept=".pdf,application/pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
