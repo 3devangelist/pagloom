@@ -38,7 +38,8 @@ var (
 func closeHook(hwnd, msg, wp, lp uintptr) uintptr {
 	const wmClose = 0x0010
 	if msg == wmClose && unsaved.Load() {
-		text := "Há páginas que ainda não foram exportadas.\n\nSe fechares agora, perdes essas páginas. Fechar mesmo assim?"
+		text := tr("Há páginas que ainda não foram exportadas.\n\nSe fechares agora, perdes essas páginas. Fechar mesmo assim?",
+			"Some pages have not been exported yet.\n\nIf you close now, those pages will be lost. Close anyway?")
 		r, _, _ := pMessageBox.Call(hwnd, uintptr(unsafe.Pointer(u16(text))), uintptr(unsafe.Pointer(u16("Pagloom"))),
 			0x4|0x30|0x100) // MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
 		if r != 6 { // IDYES
@@ -130,7 +131,7 @@ func runSaveDialog(owner uintptr, name, ext, desc, initialDir string) dlgRes {
 				ch <- dlgRes{code: 0xFFFF}
 			}
 		}()
-		filter := desc + " (*." + ext + ")\x00*." + ext + "\x00Todos os ficheiros (*.*)\x00*.*\x00\x00"
+		filter := desc + " (*." + ext + ")\x00*." + ext + "\x00" + tr("Todos os ficheiros", "All files") + " (*.*)\x00*.*\x00\x00"
 		f16 := utf16.Encode([]rune(filter))
 		buf := make([]uint16, 32768)
 		copy(buf, syscall.StringToUTF16(name))
@@ -140,7 +141,7 @@ func runSaveDialog(owner uintptr, name, ext, desc, initialDir string) dlgRes {
 			nFilterIndex: 1,
 			lpstrFile:    &buf[0],
 			nMaxFile:     uint32(len(buf)),
-			lpstrTitle:   u16("Guardar como"),
+			lpstrTitle:   u16(tr("Guardar como", "Save as")),
 			Flags:        0x00000002 | 0x00000800 | 0x00000008 | 0x00080000, // OVERWRITEPROMPT|PATHMUSTEXIST|NOCHANGEDIR|EXPLORER
 			lpstrDefExt:  u16(ext),
 		}
@@ -180,7 +181,8 @@ func saveDialog(name, ext, desc, initialDir string) (string, bool, string) {
 	}
 	// A janela não abriu: grava em Documentos\Digitalizações
 	p := autoSavePath(docs, name, ext)
-	return p, true, fmt.Sprintf("A janela \"Guardar como\" não abriu (erro 0x%X); o ficheiro foi gravado em Documentos\\Digitalizações.", r.code)
+	return p, true, fmt.Sprintf(tr("A janela \"Guardar como\" não abriu (erro 0x%X); o ficheiro foi gravado em Documentos\\Digitalizações.",
+		"The \"Save as\" window did not open (error 0x%X); the file was saved in Documents\\Digitalizações."), r.code)
 }
 
 func documentsDir() string {

@@ -6,8 +6,6 @@
 [![Build](https://github.com/3devangelist/pagloom/actions/workflows/release.yml/badge.svg)](https://github.com/3devangelist/pagloom/actions/workflows/release.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
-*Versão em português: [README.pt-PT.md](README.pt-PT.md)*
-
 **Pagloom** is a desktop app for scanning documents, fixing the pages and weaving everything, including existing PDFs, into a single document. The name comes from *page* + *loom*.
 
 **[⬇ Download the latest release](https://github.com/3devangelist/pagloom/releases/latest)** — Windows (`.zip`) and Linux (`.AppImage`).
@@ -22,7 +20,7 @@
 | **Requested and directed by** | Ricardo Pereira ([@3devangelist](https://github.com/3devangelist)) |
 | **Written by** | Claude (Anthropic), in Cowork |
 | **Platforms** | Windows 10/11 · Linux (Ubuntu, Debian, Fedora, openSUSE, Arch) · Linux ARM (Raspberry Pi) |
-| **Interface language** | Portuguese (Portugal) |
+| **Interface language** | Portuguese (Portugal) and English — **PT / EN** selector in the header |
 | **Licence** | [MIT](LICENSE) |
 
 ---
@@ -33,7 +31,8 @@
 - **Shows each page as it is scanned**, with the previous page side by side when useful.
 - **Fixes pages**: rotate by any angle, straighten, crop and set the white and black points.
 - **Merges PDFs and images** with the scans and lets you **reorder pages** by dragging.
-- **Turns phone photos into pages**: finds the sheet, corrects perspective and curvature, and sets the page to its real size.
+- **Turns phone photos into pages**: finds the sheet (or both pages of an open book), corrects perspective and curvature, and sets the page to its real size. You review every proposed grid before anything is applied.
+- **Reads printed text (OCR)** on the PC itself, in Portuguese, English, Italian, Spanish and French, and makes **searchable PDFs**.
 - **Exports** to PDF, PNG, JPEG, TIFF or SVG at the resolution you choose.
 
 In short, one program for scanning and for the usual PDF chores: merging, reordering, rotating, cropping and deleting pages.
@@ -43,15 +42,15 @@ In short, one program for scanning and for the usual PDF chores: merging, reorde
 ## How it works
 
 ### Scanning
-1. In the **Digitalizar** (Scan) tab, pick the scanner, source (flatbed, ADF, ADF duplex), colour mode, **acquisition resolution** and area (A4, A5, Letter or full bed). Brightness and contrast are optional.
-2. Press **Digitalizar** (or the Space bar). New pages are inserted after the current page.
-3. **Redigitalizar página atual** (rescan current page) replaces the page you are viewing.
-4. On Windows there is also **Digitalizar com janela do driver**, which opens the manufacturer's own scanning dialog.
+1. In the **Scan** tab, pick the scanner, source (flatbed, ADF, ADF duplex), colour mode, **acquisition resolution** and area (A4, A5, Letter or full bed). Brightness and contrast are optional.
+2. Press **Scan** (or the Space bar). New pages are inserted after the current page.
+3. **Rescan current page** replaces the page you are viewing.
+4. On Windows there is also **Scan with the driver window**, which opens the manufacturer's own scanning dialog.
 
 ### Navigating and organising
 - Thumbnails on the left: click to open, **drag to reorder**. Ctrl+click and Shift+click select several pages.
 - ◀ ▶ buttons or the arrow keys change page. The mouse wheel also changes page when not zoomed in.
-- **Anterior + atual** shows the previous page next to the current one.
+- **Previous + current** shows the previous page next to the current one.
 - **Duplicate**, **Delete**, **Undo** (Ctrl+Z) and **Redo** (Ctrl+Y).
 
 ### Editing tools
@@ -62,38 +61,59 @@ In short, one program for scanning and for the usual PDF chores: merging, reorde
 | Angle | A | Rotate by any angle (0.1° steps), with an alignment grid |
 | Straighten | T | Draw a line along a line of text or a margin; the page is levelled |
 | Photo → page | P | Finds the sheet in a photo and corrects perspective, edge curvature and size (see below) |
-| Batch | Shift+P | Photo → page on a page range (from page X to Y), several at once |
+| Batch | Shift+P | Photo → page on a page range (from page X to Y): proposes the grids, you review them, then apply all |
+| Read text | O | Reads printed text (OCR) on a page range, on the PC itself (see below) |
 | White point | W | Click an area that should be white; colours are corrected from it |
 | Black point | K | Click an area that should be black |
 | Auto levels | — | Automatic white/black correction on the selected pages |
 | Rotate 90° | R / L | Rotate the selected pages right or left |
 
 ### Adding PDFs and images
-- **Adicionar PDF / imagens** button (Ctrl+O), or drag files from the file manager onto the window.
+- **Add PDF / images** button (Ctrl+O), or drag files from the file manager onto the window.
 - Accepts PDF, PNG, JPEG, HEIC/HEIF (iPhone photos), WEBP, GIF and BMP. Password-protected PDFs ask for the password.
 - Photos come in the right way up (the phone's EXIF orientation is applied).
 - **PDF pages stay vector** (selectable text) when moved, rotated by 90° or cropped.
-- Free-angle rotation, straightening and levels turn that page into an image, at the resolution set in the **Página** tab (300 dpi by default).
+- Free-angle rotation, straightening and levels turn that page into an image, at the resolution set in the **Page** tab (300 dpi by default).
 
 ### Phone photos → page
-1. Add the photo and press **Foto → página** (key P).
+1. Add the photo and press **Photo → page** (key P). It also works on **scanned PDFs** (pages that are images): the page is converted at the scan's own resolution. Digital PDFs (text and vectors) are already straight and are left out.
 2. Pagloom looks for the sheet in the photo **at full resolution** and places a **grid of points** (4 × 4 by default; 3 × 3 up to 8 × 8):
    - **Corners:** where straight lines fitted to the middle of each edge meet. A folded or missing corner does not pull the edge.
    - **Warp and crop only:** the result is the photo's own pixels resampled onto the straightened page; nothing is painted and colours and levels are left alone. Anything missing from the photo shows as photographed.
    - **Minimal deformation:** by default only perspective is corrected. Curvature is added only when the **content** confirms it: lines of text and printed rules (horizontal), and margins, columns and table lines (vertical), were straight on paper.
-   - **Validation:** "perspective only" is compared with "perspective + content correction", and the simplest one that straightens the text wins. A **confidence** level (high, medium, low) is shown with the reasons; "mostrar análise" shows in green where the lines were measured.
+   - **Validation:** "perspective only" is compared with "perspective + content correction", and the simplest one that straightens the text wins. A **confidence** level (high, medium, low) is shown with the reasons; "show analysis" shows in green where the lines were measured.
 3. Drag any point if needed. A magnifier appears for precise placement, and Ctrl+wheel zooms in.
 4. **Sheet format**: *Automatic* works out the real proportions from the perspective and picks A4, Letter or Legal. You can also pick A3, A4, A5, A6, Letter, Legal or a **custom size** in mm, for books with non-standard sizes.
 5. **Enter** applies. The page comes out straight, with the correct size in mm and the resolution (dpi) the photo allows, without downscaling.
-6. In the **Página** tab, **Endireitar logo as fotos ao adicionar** does this automatically for every JPEG and HEIC photo you add, several photos at once (one per CPU core). Photos with low confidence are left as they are, for you to fix by hand. The number of photos processed in parallel adapts to the PC (cores, free memory and photo size); on a modest PC fewer run at once, and if memory runs out the number drops and the photo is retried. It can also be fixed by hand in **Fotos em paralelo**.
+6. In the **Page** tab, **Straighten photos as they are added** prepares this for every JPEG and HEIC photo you add, several photos at once (one per CPU core), and opens the review described below. The number of photos processed in parallel adapts to the PC (cores, free memory and photo size); on a modest PC fewer run at once, and if memory runs out the number drops and the photo is retried. It can also be set by hand in **Photos in parallel**.
+
+**Batch: preview, review, apply.** **Batch** (Shift+P) and "Straighten photos as they are added" do not change anything straight away: they show the proposed grids of every page. Go through them with the arrow keys and confirm or fix each one; you can also **Skip this page** or switch split / do not split. **Apply all** (Enter) then corrects everything at once, and one Ctrl+Z undoes it. Esc cancels the review.
+
+**Grids by hand.** **＋ Grid** inserts a fixed-size grid in the free half of the photo, ready to drag into place; **− Grid**, or right-click on a grid, deletes it. This works in the review and in Photo → page. Each grid becomes one page, left to right (top to bottom when stacked).
+
+**Editing points.** Corners lead, then edge points, then inner points: moving a corner re-spaces the edge and inner points evenly, and moving an edge point reshapes the inner ones. A point you drag yourself stays where you put it (filled square); double-click it to release it.
+
+**Training data.** When the export includes pages from Photo → page, a `<name>.treino.zip` is saved next to it with the original photos and, for each, the proposed and the edited grid. These files are collected to improve the detection; see [`treino/README.md`](treino/README.md).
+
+**Open books and manuals:** a photo with two pages side by side is split into a left and a right page, each straightened on its own (Page tab: split automatically / do not split). Each grid has its own colour. A4 and A5 have the same proportions, so for an A5 manual the true size is only right if you pick the format.
+
+**For photos that work first time:** a plain background that contrasts with the paper, nothing on or touching the sheet, and even light (the phone's shadow confuses detection).
 
 Detection also works on textured backgrounds such as lace tablecloths, fabric or wood grain: paper is smooth, so the edge chosen is the outermost one with smooth paper just inside it.
 
+### Reading text (OCR)
+- **Ⓣ Read text** button (key O): choose the pages ("from page X to Y") and Pagloom reads the printed text, several pages at once, on the PC itself with Tesseract; nothing is sent anywhere.
+- **Languages** (**Text** tab): Portuguese, English, Italian, Spanish and French. By default the language is **detected automatically, page by page** (a band of each page is read and typical words are counted), so a multilingual manual is read with the right language on every page; they can also be chosen by hand.
+- By default, text is **read whenever pages are added** (can be turned off in the Text tab).
+- Works on photos, images and scanned PDFs (digital PDFs already contain their text). Handwriting is not reliable.
+- The **Text** tab shows the current page's text, with Copy and Save as `.txt` (all pages read).
+- **Searchable PDF:** when exporting to PDF, the text read is placed invisibly over each image, so it can be searched (Ctrl+F), selected and read by other tools.
+
 ### Exporting
-1. **Exportar** tab: choose the format, the pages (all, selected, current or a range such as `1-3, 5`) and the **export resolution**.
+1. **Export** tab: choose the format, the pages (all, selected, current or a range such as `1-3, 5`) and the **export resolution**. **Native (unchanged)** keeps image pages with their original bytes, no resampling or recompression.
 2. PDF options: keep the original PDF pages, and store images as JPEG (adjustable quality) or lossless (PNG).
-3. **Exportar…** opens the system "Save as" dialog. When it finishes, a **show in folder** link appears.
-4. The **Exportar** button at the top (or Ctrl+E) first asks for the format, pages and resolution, then opens "Save as" to choose the folder and file name.
+3. **Export…** opens the system "Save as" dialog. When it finishes, a **show in folder** link appears.
+4. The **Export** button at the top (or Ctrl+E) first asks for the format, pages and resolution, then opens "Save as" to choose the folder and file name.
 
 | Format | Result |
 |---|---|
@@ -165,7 +185,7 @@ The script writes to `dist/`:
 - `Pagloom.exe` (Windows x86_64)
 - `Pagloom-x86_64.AppImage` and `Pagloom-aarch64.AppImage` (Linux)
 
-On first run the script downloads the JavaScript libraries (`fetch-libs.sh`: pdf.js, pdf-lib, OpenCV.js and libheif from the npm registry into `web/lib/`), the Go dependencies (`go mod tidy`), and `appimagetool` with the AppImage runtimes into `build/tools/`.
+On first run the script downloads the JavaScript libraries (`fetch-libs.sh`: pdf.js, pdf-lib, OpenCV.js, libheif and Tesseract.js with its language data, from the npm registry and jsDelivr into `web/lib/`), the Go dependencies (`go mod tidy`), and `appimagetool` with the AppImage runtimes into `build/tools/`.
 
 Windows only, also from Windows:
 ```bash
@@ -201,7 +221,9 @@ mock.go            simulated scanner for testing
 web/               interface (index.html, style.css, app.js); web/lib/ is filled by fetch-libs.sh
 web/photo.js       photo → page: sheet detection, point grid, perspective and curvature correction
 web/photo-worker.js  runs photo.js on other CPU cores (Web Workers)
-fetch-libs.sh      downloads pdf.js, pdf-lib, OpenCV.js and libheif
+web/i18n.js        English translation of the interface (Portuguese is the source language)
+fetch-libs.sh      downloads pdf.js, pdf-lib, OpenCV.js, libheif and Tesseract.js
+treino/            training data for the photo detection (avaliar.py; the data itself stays out of git)
 dev-server.js      test server for the interface without compiling (testar-interface.bat on Windows)
 build.sh           build and AppImage packaging
 pagloom.svg        logo (source); pagloom.png / pagloom.ico / icons/ are generated from it
@@ -225,6 +247,7 @@ docs/              screenshots and social preview image
 | **pdf-lib** (MIT) | Writing PDFs, copying vector pages, rotating and cropping |
 | **OpenCV.js** (Apache-2.0) | Finding the sheet in photos and resampling the corrected page (bicubic remap) |
 | **libheif-js** (LGPL-3.0) | Opening HEIC/HEIF photos from iPhones |
+| **Tesseract.js** (Apache-2.0) | Reading printed text (OCR), with the `best_int` language data |
 | **HTML5 Canvas** | Rotation, cropping, levels, thumbnails |
 | **zenity / kdialog / pkexec** | Linux dialogs ("Save as", questions, password) |
 | **appimagetool** | Building the AppImages |
@@ -238,7 +261,7 @@ docs/              screenshots and social preview image
 
 ### Known limitations
 - Tested with a simulated scanner; still to be confirmed with a real EPSON ET-2850.
-- Photo → page: tested with 24 real photos (sheets on a lace tablecloth): 22 with high or medium confidence and the text straight to 0.15–0.5 mm; the other 2 are flagged for manual correction. The proportion worked out from perspective can be off by up to ~8%, so automatic mode prefers A4; for other formats, pick the format.
+- Photo → page: tested with 24 real photos (sheets on a lace tablecloth): 22 with high or medium confidence and the text straight to 0.15–0.5 mm; the other 2 need manual correction. Open books (a 24-photo manual): most pages are found, but objects touching the book and strong shadows still need fixing by hand in the review. The proportion worked out from perspective can be off by up to ~8%, so automatic mode prefers A4; for other formats, pick the format.
 - No macOS build yet.
 
 ---
@@ -276,10 +299,17 @@ docs/              screenshots and social preview image
 24. A logo (monogram **P** with a woven thread), in SVG, used as the icon of every build.
 25. A **warning when closing** the window with pages not yet exported. TIFF import is dropped.
 26. **Phone photos → page**: detect the sheet without downscaling the photo, correct perspective (parallax) and curvature with a **grid of points** (4 × 4 or more, not just 4 corners), set the page to its **true size** (standard formats and **custom sizes**) and open **HEIC photos**.
+27. **Warp and crop only**: never paint, recolour or add anything to the photo.
+28. **Read printed text (OCR)** in Portuguese, English, Italian, Spanish and French, detecting the language first, and keep the text inside the PDF so AIs can read it.
+29. A **Native** export resolution that leaves the images untouched, and a **"Processing…"** message.
+30. The app in **Portuguese and English**.
+31. **Split open books and manuals** into pages.
+32. Batch as **preview → review → apply**, without confidence grades, with grids added and removed by hand (one page per grid) and a point hierarchy (corners → edges → inner points).
+33. Save the proposed and the edited grids with every export, to **train a better detection** later.
 
 **General rules**
 
-- All Portuguese text in **European Portuguese (pt-PT)**, never Brazilian Portuguese.
+- All Portuguese text in **European Portuguese (pt-PT)**, never Brazilian Portuguese; documentation on GitHub in **English**.
 - **Direct answers, no gratuitous praise.**
 
 ---

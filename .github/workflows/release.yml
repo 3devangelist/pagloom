@@ -26,12 +26,21 @@ jobs:
       - name: Package Windows build
         run: cd dist && zip -9 Pagloom-windows-x64.zip Pagloom.exe
 
+      - name: Release notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" 'index($0, "## [" v "]") == 1 {f=1; next} /^## \[/ {if (f) exit} f' CHANGELOG.md > release-notes.md
+          echo "" >> release-notes.md
+          echo "Full history: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)" >> release-notes.md
+          cat release-notes.md
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           name: Pagloom ${{ github.ref_name }} — Scanner & PDF Utility
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/Pagloom-windows-x64.zip
             dist/Pagloom-x86_64.AppImage

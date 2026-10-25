@@ -36,7 +36,7 @@ function saveAs(name, ext, desc) {
 
 async function api(req, res, p, q) {
   switch (p) {
-    case 'ping': case 'unsaved': return json(res, { ok: true });
+    case 'ping': case 'unsaved': case 'lang': return json(res, { ok: true });
     case 'info': return json(res, { os: process.platform === 'win32' ? 'windows' : 'linux', driverUI: false, cpus: os.cpus().length, memTotal: os.totalmem(), memAvail: os.freemem() });
     case 'deps': return json(res, { ok: true });
     case 'devices': return json(res, { devices: [] }); // sem scanner

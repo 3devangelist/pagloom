@@ -164,8 +164,8 @@ func saveDialog(name, ext, desc, initialDir string) (string, bool, string) {
 		return p
 	}
 	if z, err := exec.LookPath("zenity"); err == nil {
-		out, err := command(z, "--file-selection", "--save", "--confirm-overwrite", "--title=Guardar como",
-			"--filename="+start, "--file-filter="+desc+" | *."+ext, "--file-filter=Todos os ficheiros | *").Output()
+		out, err := command(z, "--file-selection", "--save", "--confirm-overwrite", "--title="+tr("Guardar como", "Save as"),
+			"--filename="+start, "--file-filter="+desc+" | *."+ext, "--file-filter="+tr("Todos os ficheiros", "All files")+" | *").Output()
 		if err == nil && strings.TrimSpace(string(out)) != "" {
 			return fixExt(strings.TrimSpace(string(out))), true, ""
 		}
@@ -174,7 +174,7 @@ func saveDialog(name, ext, desc, initialDir string) (string, bool, string) {
 		}
 	}
 	if k, err := exec.LookPath("kdialog"); err == nil {
-		out, err := command(k, "--getsavefilename", start, "*."+ext+"|"+desc, "--title", "Guardar como").Output()
+		out, err := command(k, "--getsavefilename", start, "*."+ext+"|"+desc, "--title", tr("Guardar como", "Save as")).Output()
 		if err == nil && strings.TrimSpace(string(out)) != "" {
 			return fixExt(strings.TrimSpace(string(out))), true, ""
 		}
@@ -183,5 +183,6 @@ func saveDialog(name, ext, desc, initialDir string) (string, bool, string) {
 		}
 	}
 	p := autoSavePath(documentsDir(), name, ext)
-	return p, true, "Não há janela \"Guardar como\" disponível (instala o zenity); o ficheiro foi gravado em Documentos/Digitalizações."
+	return p, true, tr("Não há janela \"Guardar como\" disponível (instala o zenity); o ficheiro foi gravado em Documentos/Digitalizações.",
+		"No \"Save as\" window available (install zenity); the file was saved in Documents/Digitalizações.")
 }

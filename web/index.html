@@ -21,6 +21,7 @@
     <button id="bUndo" title="Desfazer (Ctrl+Z)">↶ Desfazer</button>
     <button id="bRedo" title="Refazer (Ctrl+Y)">↷ Refazer</button>
     <span class="grow"></span>
+    <select id="uiLang" class="lang-sel" title="Língua da interface"><option value="pt">PT</option><option value="en">EN</option></select>
     <button id="bNew" title="Começar um documento novo">Novo</button>
     <button id="bExport" class="primary" title="Exportar (Ctrl+E)">⇩ Exportar</button>
   </header>
@@ -52,6 +53,7 @@
           <button class="tool" data-tool="line" title="Endireitar: desenha uma linha ao longo do texto (T)">⟋ Endireitar</button>
           <button class="tool" data-tool="photo" title="Foto → página: encontra a folha numa foto e corrige a perspetiva, a curvatura e o tamanho (P)">▱ Foto → página</button>
           <button id="bPhotoBatch" title="Foto → página em todas as páginas selecionadas, várias ao mesmo tempo (Shift+P)">▱ Lote</button>
+          <button id="bOcr" title="Ler o texto impresso das páginas (OCR, no próprio PC) — O">Ⓣ Ler texto</button>
           <button class="tool" data-tool="white" title="Clica numa zona que devia ser branca (W)">◻ Ponto branco</button>
           <button class="tool" data-tool="black" title="Clica numa zona que devia ser preta (K)">◼ Ponto preto</button>
           <button id="bAuto" title="Níveis automáticos">Auto níveis</button>
@@ -87,6 +89,7 @@
         <button class="tab on" data-tab="scan">Digitalizar</button>
         <button class="tab" data-tab="export">Exportar</button>
         <button class="tab" data-tab="page">Página</button>
+        <button class="tab" data-tab="text">Texto</button>
       </div>
 
       <div class="pane" id="pane-scan">
@@ -152,6 +155,7 @@
         <input type="text" id="range" placeholder="ex.: 1-3, 5, 8-10" class="hidden">
         <label>Resolução de exportação (ppp)</label>
         <select id="dpiOut">
+          <option value="-1">Nativa (sem alteração: imagem original, sem recomprimir)</option>
           <option value="0">Igual à original</option>
           <option>72</option><option>96</option><option>150</option><option>200</option>
           <option>300</option><option>400</option><option>600</option>
@@ -160,12 +164,30 @@
         <div id="pdfOpts">
           <label class="chk"><input type="checkbox" id="keepVector" checked> Manter páginas PDF originais (texto e vetores)</label>
           <label class="chk"><input type="checkbox" id="lossless"> Imagens sem perdas (PNG) — ficheiro maior</label>
+          <label class="chk"><input type="checkbox" id="searchable" checked> PDF pesquisável (texto lido por cima das imagens)</label>
         </div>
         <label id="qLbl">Qualidade JPEG <output id="qV">85</output></label>
         <input type="range" id="quality" min="30" max="100" step="5" value="85">
         <div class="info" id="exportInfo"></div>
         <button id="bExport2" class="primary wide">⇩ Exportar…</button>
         <div id="lastOut" class="hint"></div>
+      </div>
+
+      <div class="pane hidden" id="pane-text">
+        <label class="chk"><input type="checkbox" id="ocrOnAdd" checked> Ler o texto sempre ao adicionar páginas</label>
+        <label class="chk"><input type="checkbox" id="ocrDetect" checked> Detetar a língua automaticamente</label>
+        <label>Línguas do texto <span id="ocrLangHint" class="hint"></span></label>
+        <label class="chk"><input type="checkbox" id="ocrPor" checked> Português</label>
+        <label class="chk"><input type="checkbox" id="ocrEng"> Inglês</label>
+        <label class="chk"><input type="checkbox" id="ocrIta"> Italiano</label>
+        <label class="chk"><input type="checkbox" id="ocrSpa"> Espanhol</label>
+        <label class="chk"><input type="checkbox" id="ocrFra"> Francês</label>
+        <p class="hint">Com a deteção ligada, o programa escolhe sozinho entre estas cinco. Sem ela, usa as que marcares (cada língua a mais torna a leitura mais lenta).</p>
+        <button id="bOcr2" class="primary wide">Ⓣ Ler texto…</button>
+        <label>Texto da página atual</label>
+        <textarea id="ocrText" readonly rows="14"></textarea>
+        <div class="row"><button id="bOcrCopy">Copiar</button><button id="bOcrSave">Guardar .txt…</button></div>
+        <p class="hint">Lido no próprio PC (Tesseract), sem enviar nada. Lê texto impresso; o manuscrito não sai fiável. No PDF exportado, o texto fica pesquisável e selecionável.</p>
       </div>
 
       <div class="pane hidden" id="pane-page">
@@ -196,6 +218,11 @@
           <input type="number" id="photoW" min="10" max="2000" step="0.5" value="155"><span>×</span>
           <input type="number" id="photoH" min="10" max="2000" step="0.5" value="235"><span>mm</span>
         </div>
+        <label>Livro ou manual aberto (duas páginas na foto)</label>
+        <select id="photoSpread">
+          <option value="auto">Dividir em duas páginas automaticamente</option>
+          <option value="never">Não dividir</option>
+        </select>
         <label class="chk"><input type="checkbox" id="photoAuto"> Endireitar logo as fotos ao adicionar</label>
         <label>Fotos em paralelo (núcleos a usar)</label>
         <select id="photoCores">

@@ -154,7 +154,8 @@ function intersect(p1, d1, p2, d2) {
 }
 
 // A partir de um quadrilátero aproximado, encontra as arestas reais (curvas) e os cantos.
-function refineEdges(at, quad, ok = null) {
+// skip = índice de um lado que fica como está (a lombada de um livro aberto: aí não há aresta para procurar)
+function refineEdges(at, quad, ok = null, skip = -1) {
   let C = quad.map((p) => p.slice());
   // claro/escuro: compara dentro e fora da folha
   let inside = 0, outside = 0;
@@ -181,7 +182,10 @@ function refineEdges(at, quad, ok = null) {
   };
   let lines = [];
   for (let it = 0; it < 3; it++) {
-    lines = [0, 1, 2, 3].map((k) => fitLine(sideGeom(C[k], C[(k + 1) % 4])));
+    lines = [0, 1, 2, 3].map((k) => {
+      const g = sideGeom(C[k], C[(k + 1) % 4]);
+      return k === skip ? { g, p: g.A, d: [g.B[0] - g.A[0], g.B[1] - g.A[1]], n: 99, curve: null } : fitLine(g);
+    });
     // canto = cruzamento das duas retas (num canto dobrado, fica onde a folha teria o canto)
     C = C.map((c, k) => meet(C, lines[(k + 3) % 4], lines[k], k, lines[(k + 3) % 4], lines[k]));
   }
@@ -215,7 +219,7 @@ function edgeSupport(at, q, W, H, reach = 0) {
 }
 // Margens: fração da faixa logo dentro das bordas que é lisa (papel). Num quadrilátero que apanhou fundo
 // com textura, essa faixa cai no fundo. thr = limite de textura do papel, medido no interior.
-function marginStats(tex, W, H, q, inset) {
+function marginStats(tex, W, H, q, inset, skip = -1) {
   const h = homography(q), vals = [];
   for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) {
     const p = applyH(h, 0.06 + 0.88 * i / 15, 0.06 + 0.88 * j / 15);
@@ -225,6 +229,7 @@ function marginStats(tex, W, H, q, inset) {
   const thr = clamp(2.5 * vals[Math.floor(vals.length * 0.2)], 12, 30); // papel liso (margens, entre linhas)
   let good = 0, n = 0;
   for (let k = 0; k < 4; k++) {
+    if (k === skip) continue; // lombada
     const g = sideGeom(q[k], q[(k + 1) % 4]);
     for (let m = 1; m < 32; m++) {
       const t = m / 32, x = g.A[0] + (g.B[0] - g.A[0]) * t + inset * g.n[0], y = g.A[1] + (g.B[1] - g.A[1]) * t + inset * g.n[1];
@@ -233,6 +238,16 @@ function marginStats(tex, W, H, q, inset) {
     }
   }
   return { margin: good / n, thr };
+}
+// Fração do interior do quadrilátero que é neutra (sem cor), numa grelha de 16 × 16 pontos
+function neutralFrac(chroma, W, H, q, cT) {
+  const h = homography(q);
+  let n = 0;
+  for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) {
+    const p = applyH(h, 0.04 + 0.92 * i / 15, 0.04 + 0.92 * j / 15);
+    if (chroma[clamp(Math.round(p[1]), 0, H - 1) * W + clamp(Math.round(p[0]), 0, W - 1)] < cT) n++;
+  }
+  return n / 256;
 }
 function otsu(arr, step = 7) { // limiar de Otsu de um Uint8Array (amostrado)
   const hist = new Float64Array(256);
@@ -284,20 +299,132 @@ function quadsFrom(cv, bin, minArea, out, tag) {
 
 // Deteta a folha numa foto. Trabalha na resolução total da foto.
 // Devolve { found, corners (tl, tr, br, bl), sides (desvios das arestas), score }.
-export function detectPage(cv, img, progress = () => {}) {
+// ───────────────────────── livro aberto ─────────────────────────
+// Duas páginas lado a lado: o contorno do papel tem um entalhe em cima e em baixo onde as páginas descem para a
+// lombada (defeitos de convexidade). Sem entalhes, procura-se a sombra da lombada: faixa vertical mais escura e sem
+// texto perto do meio. Devolve { quad (4 cantos de fora), sTop, sBot } ou null se não for um livro aberto.
+function findSpread(cv, paper, gray, chroma, cT, mean, W, H, D, kP, kT) {
+  // máscara do livro: neutro (sem cor) e não muito escuro. Ao contrário do mapa de papel, não exige "liso": os blocos
+  // de texto e a página em sombra junto à lombada ficam dentro; a madeira e os objetos de cor ficam fora.
+  // Só conta o contorno exterior, por isso os buracos que sobrem não importam.
+  // cor relativa ao brilho (como se o brilho fosse 128): na sombra a cor absoluta muda, a relativa quase não
+  const gT = 0.5 * otsu(mean), m = new cv.Mat(H, W, cv.CV_8UC1), md = m.data;
+  for (let i = 0; i < md.length; i++) md[i] = chroma[i] * 128 < cT * Math.max(mean[i], 1) && mean[i] > gT ? 255 : 0;
+  const k1 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(kP, kP));
+  cv.morphologyEx(m, m, cv.MORPH_OPEN, k1); // corta ligações finas a objetos neutros (metal, plástico branco)
+  cv.morphologyEx(m, m, cv.MORPH_CLOSE, k1);
+  if (findSpread.debug) findSpread.debug.mask = md.slice();
+  k1.delete();
+  const cs = new cv.MatVector(), hi = new cv.Mat();
+  cv.findContours(m, cs, hi, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE);
+  m.delete(); hi.delete();
+  let bi = -1, ba = 0;
+  const areas = [];
+  for (let i = 0; i < cs.size(); i++) { const c = cs.get(i), a = cv.contourArea(c); areas.push(a); if (a > ba) { ba = a; bi = i; } c.delete(); }
+  if (bi < 0 || ba < 0.15 * W * H) { cs.delete(); return null; }
+  const cnt = cs.get(bi), pts = cnt.data32S;
+  // uma sombra sobre a página (só com luz amarela ambiente) fica da cor da madeira e parte o papel em manchas;
+  // juntam-se as manchas grandes que tocam (ou quase) na principal e os cantos saem do invólucro do conjunto
+  const R = cv.boundingRect(cnt), pad = D / 25, all = Array.from(pts);
+  for (let i = 0; i < cs.size(); i++) {
+    if (i === bi || areas[i] < 0.01 * W * H) continue;
+    const c = cs.get(i), r = cv.boundingRect(c);
+    if (r.x < R.x + R.width + pad && r.x + r.width > R.x - pad && r.y < R.y + R.height + pad && r.y + r.height > R.y - pad) all.push(...c.data32S);
+    c.delete();
+  }
+  const merged = cv.matFromArray(all.length / 2, 1, cv.CV_32SC2, all), quad = quadOfContour(cv, merged);
+  merged.delete();
+  // entalhes: pontos mais fundos entre o contorno e o invólucro convexo
+  const hull = new cv.Mat(), def = new cv.Mat(), notches = [];
+  try {
+    cv.convexHull(cnt, hull, false, false);
+    cv.convexityDefects(cnt, hull, def);
+    for (let r = 0; r < def.rows; r++) {
+      const d = def.data32S.subarray(r * 4, r * 4 + 4), depth = d[3] / 256;
+      if (depth > 0.012 * D) notches.push({ p: [pts[d[2] * 2], pts[d[2] * 2 + 1]], depth });
+    }
+  } catch (e) { /* contorno estranho: só a sombra da lombada */ }
+  hull.delete(); def.delete(); cnt.delete(); cs.delete();
+  const est = estimateRatio(quad, W, H);
+  if (est.ratio > 0.92) return null; // um livro aberto é mais largo do que alto
+  // entalhe de cima e de baixo: perto da borda respetiva e na zona do meio (30–70% da largura)
+  const h = homography(quad), hInv = invertH(h);
+  const pick = (vEdge) => {
+    let best = null;
+    for (const n of notches) {
+      const [u, v] = applyH(hInv, n.p[0], n.p[1]);
+      if (u < 0.3 || u > 0.7 || Math.abs(v - vEdge) > 0.25) continue;
+      if (!best || n.depth > best.depth) best = { ...n, u, v };
+    }
+    return best;
+  };
+  let top = pick(0), bot = pick(1);
+  // sombra da lombada (confirma, ou substitui os entalhes que faltarem)
+  const gut = gutter(gray, W, H, h);
+  if (!top && !bot && !gut) return null;
+  const uTop = top ? top.u : gut ? gut.uTop : bot.u, uBot = bot ? bot.u : gut ? gut.uBot : top.u;
+  return { quad, sTop: applyH(h, uTop, 0), sBot: applyH(h, uBot, 1), how: (top ? 'T' : '') + (bot ? 'B' : '') + (gut ? 'G' : '') };
+}
+// Dois candidatos que são as duas páginas de um livro aberto: sem sobreposição, lado a lado, com alturas e áreas
+// parecidas, cada um mais alto do que largo, e juntos pelo menos tão bons como o melhor candidato sozinho.
+function findPagePair(cands, W, H, best) {
+  const box = (q) => { const xs = q.map((p) => p[0]), ys = q.map((p) => p[1]); return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) }; };
+  const good = cands.filter((c) => c.score > 0 && c.neutral > 0.6 && c.inside.margin > 0.5 && estimateRatio(c.quad, W, H).ratio > 1.1)
+    .sort((a, b) => b.score - a.score).slice(0, 12);
+  let res = null;
+  for (let i = 0; i < good.length; i++) for (let j = i + 1; j < good.length; j++) {
+    const a = good[i], b = good[j], ra = box(a.quad), rb = box(b.quad);
+    const ix = Math.max(0, Math.min(ra.x1, rb.x1) - Math.max(ra.x0, rb.x0)), iy = Math.max(0, Math.min(ra.y1, rb.y1) - Math.max(ra.y0, rb.y0));
+    const wa = ra.x1 - ra.x0, wb = rb.x1 - rb.x0, ha = ra.y1 - ra.y0, hb = rb.y1 - rb.y0;
+    if (ix > 0.15 * Math.min(wa, wb)) continue; // sobrepõem-se
+    if (iy < 0.7 * Math.min(ha, hb) || a.area / b.area < 0.6 || a.area / b.area > 1.6) continue;
+    const [L, R] = (ra.x0 + ra.x1) < (rb.x0 + rb.x1) ? [a, b] : [b, a], rl = box(L.quad), rr = box(R.quad);
+    if (rr.x0 - rl.x1 > 0.15 * Math.min(wa, wb)) continue; // afastadas: não são as duas metades do mesmo livro
+    const s = a.score + b.score;
+    if (!res || s > res.s) res = { L, R, s };
+  }
+  return res && (!best || res.s >= 0.9 * best.score) ? res : null;
+}
+function invertH(h) {
+  const [a, b, c, d, e, f, g, k, i] = h, A = e * i - f * k, B = -(d * i - f * g), C = d * k - e * g, det = a * A + b * B + c * C;
+  return [A, -(b * i - c * k), b * f - c * e, B, a * i - c * g, -(a * f - c * d), C, -(a * k - b * g), a * e - b * d].map((v) => v / det);
+}
+// Sombra da lombada: na zona 35–65% da largura, a coluna mais escura (em cima e em baixo, para aceitar inclinação),
+// claramente mais escura do que o papel à volta.
+function gutter(gray, W, H, h) {
+  const at = sampler(gray, W, H), NU = 120, prof = (v0, v1) => {
+    const p = new Float32Array(NU + 1);
+    for (let i = 0; i <= NU; i++) { let s = 0; for (let k = 0; k <= 20; k++) { const q = applyH(h, i / NU, v0 + (v1 - v0) * k / 20); s += at(q[0], q[1]); } p[i] = s / 21; }
+    return p;
+  };
+  const find = (p) => {
+    let bi = -1;
+    for (let i = Math.round(NU * 0.35); i <= Math.round(NU * 0.65); i++) if (bi < 0 || p[i] < p[bi]) bi = i;
+    const side = (Math.max(...p.slice(Math.round(NU * 0.15), Math.round(NU * 0.3))) + Math.max(...p.slice(Math.round(NU * 0.7), Math.round(NU * 0.85)))) / 2;
+    return (side - p[bi]) / side > 0.06 ? bi / NU : null; // pelo menos 6% mais escura
+  };
+  const uTop = find(prof(0.1, 0.45)), uBot = find(prof(0.55, 0.9));
+  if (uTop == null && uBot == null) return null;
+  return { uTop: uTop ?? uBot, uBot: uBot ?? uTop };
+}
+
+export function detectPage(cv, img, progress = () => {}, opts = {}) {
   const W = img.width, H = img.height, D = Math.max(W, H), px = img.data;
   // dois mapas: cinzento e "brancura" (mínimo de R, G, B — o papel é claro e sem cor)
-  const gray = new Uint8Array(W * H), white = new Uint8Array(W * H);
+  // e "cor" (máximo − mínimo de R, G, B): o papel é neutro (4–12 mesmo em sombra), a madeira clara e o plástico não (18–50)
+  const gray = new Uint8Array(W * H), white = new Uint8Array(W * H), chroma = new Uint8Array(W * H);
   for (let i = 0, j = 0; j < gray.length; i += 4, j++) {
-    const r = px[i], g = px[i + 1], b = px[i + 2];
+    const r = px[i], g = px[i + 1], b = px[i + 2], mn = Math.min(r, g, b);
     gray[j] = (r * 77 + g * 150 + b * 29) >> 8;
-    white[j] = Math.min(r, g, b);
+    white[j] = mn;
+    chroma[j] = Math.max(r, g, b) - mn;
   }
   const cands = [], maps = {};
   const kB = odd(D / 300), kM = odd(D / 150), kE = odd(D / 400), kR = odd(D / 1000), kT = odd(D / 50), kP = odd(D / 60);
   // textura local (desvio-padrão numa janela kT): o papel é liso; renda, tecido e veios da madeira não
   progress('A medir a textura…');
   const tex = new Uint8Array(W * H), mean = new Uint8Array(W * H), paper = new Uint8Array(W * H);
+  let cT = 24;
   {
     const g8 = new cv.Mat(H, W, cv.CV_8UC1); g8.data.set(gray);
     const gf = new cv.Mat(), g2 = new cv.Mat(), mu = new cv.Mat(), sq = new cv.Mat(), sz = new cv.Size(kT, kT);
@@ -310,9 +437,12 @@ export function detectPage(cv, img, progress = () => {}) {
       tex[i] = sd > 255 ? 255 : sd; mean[i] = M[i];
     }
     mu.delete(); sq.delete();
-    // papel = liso e claro (limites tirados da própria foto)
+    const c8 = new cv.Mat(H, W, cv.CV_8UC1); c8.data.set(chroma);
+    cv.blur(c8, c8, sz); chroma.set(c8.data); c8.delete(); // cor média na mesma janela
+    // papel = liso, claro e neutro (limites tirados da própria foto)
     const tT = clamp(otsu(tex), 10, 30), gT = 0.75 * otsu(mean);
-    for (let i = 0; i < paper.length; i++) paper[i] = tex[i] < tT && mean[i] > gT ? 255 : 0;
+    cT = clamp(otsu(chroma), 13, 24);
+    for (let i = 0; i < paper.length; i++) paper[i] = tex[i] < tT && mean[i] > gT && chroma[i] < cT ? 255 : 0;
   }
   const maxs = [['gray', gray], ['white', white], ['paper', paper]];
   maxs.forEach(([name, arr], n) => {
@@ -334,15 +464,44 @@ export function detectPage(cv, img, progress = () => {}) {
     }
     blur.delete(); bin.delete(); kerM.delete();
   });
+  if (opts.debug) { opts.debug.paper = paper; findSpread.debug = opts.debug; } // diagnóstico (bancada)
   progress('A ajustar as bordas…');
   let best = null;
   for (const c of cands) {
     const at = sampler(maps[c.tag === 'paper' ? 'gray' : c.tag], W, H);
     c.support = edgeSupport(at, c.quad, W, H, c.tag === 'paper' ? kT / 2 + 8 : 0);
     c.inside = marginStats(tex, W, H, c.quad, kT / 2 + 3);
-    c.score = Math.sqrt(c.area / (W * H)) * c.fit * c.fit * c.support * c.inside.margin ** 2;
+    c.neutral = neutralFrac(chroma, W, H, c.quad, cT); // um quadrilátero que apanhou madeira tem interior com cor
+    c.score = Math.sqrt(c.area / (W * H)) * c.fit * c.fit * c.support * c.inside.margin ** 2 * c.neutral ** 2;
     if (!best || c.score > best.score) best = c;
   }
+  // livro aberto? (1) dois candidatos lado a lado — a sombra da lombada costuma partir o papel em duas páginas;
+  // (2) senão, o contorno do papel com os entalhes da lombada. Cada página sai como uma deteção própria.
+  if (opts.spread !== false) {
+    const thr0 = best ? best.inside.thr : 20;
+    const okFor = (thr) => (x, y, n) => tex[clamp(Math.round(y + (kT / 2 + 3) * n[1]), 0, H - 1) * W + clamp(Math.round(x + (kT / 2 + 3) * n[0]), 0, W - 1)] < thr;
+    const makePage = (quad, tag, spine) => {
+      const r = refineEdges(sampler(maps.gray, W, H), quad, okFor(thr0), spine);
+      const pd = { found: true, corners: r.corners, map: tag, support: 99, margin: marginStats(tex, W, H, r.corners, kT / 2 + 3, spine).margin, edgeSamples: r.edgeSamples };
+      pd.content = analyzeContent(cv, img, r.corners);
+      pd.quality = assessQuality(pd, W, H);
+      return pd;
+    };
+    const finish = (pages, how, quad) => {
+      const lv = ['baixa', 'média', 'alta'], worst = pages.reduce((a, b) => (lv.indexOf(b.quality.level) < lv.indexOf(a.quality.level) ? b : a));
+      findSpread.debug = null;
+      return { found: true, spread: true, how, pages, corners: quad, quality: worst.quality, content: worst.content, score: 1, cands: [] };
+    };
+    const pair = findPagePair(cands, W, H, best);
+    if (pair) { progress('A ajustar as páginas…'); return finish([makePage(pair.L.quad, 'pair', -1), makePage(pair.R.quad, 'pair', -1)], 'P', pair.L.quad); }
+    const sp = findSpread(cv, paper, maps.gray, chroma, cT, mean, W, H, D, kP, kT);
+    if (sp) {
+      progress('A ajustar as páginas…');
+      const q = sp.quad;
+      return finish([makePage([q[0], sp.sTop, sp.sBot, q[3]], 'spread', 1), makePage([sp.sTop, q[1], q[2], sp.sBot], 'spread', 3)], sp.how, q);
+    }
+  }
+  findSpread.debug = null;
   const summary = () => cands.map((c) => ({ tag: c.tag, score: +c.score.toFixed(1), support: +c.support.toFixed(1), margin: +c.inside.margin.toFixed(2), fit: +c.fit.toFixed(2), area: +(c.area / (W * H)).toFixed(2), quad: c.quad.map((p) => p.map(Math.round)) }));
   if (!best || best.support < 10 || best.inside.margin < 0.4) {
     const m = 0.05;
@@ -551,6 +710,46 @@ export function moveNode(mesh, i, j, x, y) {
   if ((i === 0 || i === N - 1) && (j === 0 || j === N - 1)) { mesh.corners[[0, 1, 3, 2][(j ? 2 : 0) + (i ? 1 : 0)]] = [x, y]; return; }
   const p = applyH(homography(mesh.corners), i / (N - 1), j / (N - 1));
   mesh.res[(j * N + i) * 2] = x - p[0]; mesh.res[(j * N + i) * 2 + 1] = y - p[1];
+}
+
+// Arrastar à mão. Hierarquia: cantos → pontos das arestas → pontos interiores.
+// Um ponto arrastado (que não seja canto) fica fixo (mesh.fix) e não volta a mexer sozinho; os outros redistribuem-se:
+// cada aresta fica igualmente espaçada (na perspetiva dos cantos) entre os cantos e os seus pontos fixos,
+// e os interiores preenchem o espaço entre as 4 arestas (Coons).
+export function dragNode(mesh, i, j, x, y) {
+  const N = mesh.N, corner = (i === 0 || i === N - 1) && (j === 0 || j === N - 1);
+  if (!mesh.fix) mesh.fix = new Uint8Array(N * N);
+  const keep = [];
+  if (corner) for (let b = 0; b < N; b++) for (let a = 0; a < N; a++) if (mesh.fix[b * N + a]) keep.push([a, b, meshNode(mesh, a, b)]);
+  moveNode(mesh, i, j, x, y);
+  if (corner) for (const [a, b, q] of keep) moveNode(mesh, a, b, q[0], q[1]); // os fixos ficam onde estavam na foto
+  else mesh.fix[j * N + i] = 1;
+  relaxMesh(mesh);
+}
+// Solta um ponto fixo: volta a seguir as arestas
+export function freeNode(mesh, i, j) {
+  if (!mesh.fix || !mesh.fix[j * mesh.N + i]) return false;
+  mesh.fix[j * mesh.N + i] = 0; relaxMesh(mesh); return true;
+}
+export function isFixed(mesh, i, j) { return !!(mesh.fix && mesh.fix[j * mesh.N + i]); }
+function relaxMesh(mesh) {
+  const N = mesh.N, R = mesh.res, F = mesh.fix || new Uint8Array(N * N), L = N - 1;
+  const anchor = (i, j) => ((i === 0 || i === L) && (j === 0 || j === L)) || F[j * N + i];
+  const at = (i, j, k) => (((i === 0 || i === L) && (j === 0 || j === L)) ? 0 : R[(j * N + i) * 2 + k]);
+  const line = (f) => Array.from({ length: N }, (_, t) => f(t));
+  for (const e of [line((t) => [t, 0]), line((t) => [t, L]), line((t) => [0, t]), line((t) => [L, t])]) {
+    const A = e.map((p, t) => (anchor(p[0], p[1]) ? t : -1)).filter((t) => t >= 0);
+    for (let t = 1; t < L; t++) {
+      const [i, j] = e[t]; if (anchor(i, j)) continue;
+      const a = Math.max(...A.filter((s) => s < t)), b = Math.min(...A.filter((s) => s > t)), w = (t - a) / (b - a);
+      for (let k = 0; k < 2; k++) R[(j * N + i) * 2 + k] = (1 - w) * at(e[a][0], e[a][1], k) + w * at(e[b][0], e[b][1], k);
+    }
+  }
+  for (let j = 1; j < L; j++) for (let i = 1; i < L; i++) {
+    if (F[j * N + i]) continue;
+    const u = i / L, v = j / L;
+    for (let k = 0; k < 2; k++) R[(j * N + i) * 2 + k] = (1 - v) * at(i, 0, k) + v * at(i, L, k) + (1 - u) * at(0, j, k) + u * at(L, j, k);
+  }
 }
 
 // Função (u, v) → (x, y) na foto: homografia + desvio bicúbico (Catmull-Rom)

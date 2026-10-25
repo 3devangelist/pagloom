@@ -5,3 +5,6 @@
 *.zip
 /web/lib/
 /dev-out/
+
+# Local working notes (Portuguese), kept out of git
+/PROGRESS.md

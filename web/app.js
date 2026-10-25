@@ -1,6 +1,7 @@
 // Pagloom — interface (corre no WebView2 do Windows)
 import * as pdfjsLib from './lib/pdf.min.mjs';
 import * as Photo from './photo.js';
+import { tr, setLang, startTranslation } from './i18n.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.mjs';
 const { PDFDocument, degrees } = window.PDFLib;
 
@@ -411,7 +412,7 @@ async function loadPdfFile(file) {
   catch (e) { why = /encrypt/i.test(e.message) ? 'PDF protegido' : 'estrutura não suportada'; }
   const task = pdfjsLib.getDocument({ data: bytes.slice(), cMapUrl: 'lib/cmaps/', cMapPacked: true, standardFontDataUrl: 'lib/standard_fonts/' });
   task.onPassword = (update) => {
-    const pw = prompt('O ficheiro "' + file.name + '" tem palavra-passe:');
+    const pw = prompt(tr('O ficheiro "' + file.name + '" tem palavra-passe:'));
     if (pw === null) task.destroy(); else update(pw);
   };
   const doc = await task.promise;
@@ -450,7 +451,7 @@ async function addFiles(files) {
   if (!files.length) { status('Formato não suportado. Usa PDF, PNG, JPEG, HEIC, WEBP, GIF ou BMP.', 'err'); return; }
   busy('A abrir ficheiros…');
   const added = [], photoIdx = [];
-  let photos = 0, straight = 0;
+  let photos = 0;
   try {
     for (const f of files) {
       busyMsg('A abrir ' + f.name + '…');
@@ -471,24 +472,27 @@ async function addFiles(files) {
       if (photo) { photos++; photoIdx.push(added.length); }
       added.push(p);
     }
-    if (photoIdx.length && $('photoAuto').checked) { // várias fotos ao mesmo tempo, uma por núcleo
-      let done = 0;
-      const cores = await setPoolFor(photoIdx.map((k) => added[k]));
-      busyMsg(`A endireitar ${photoIdx.length} foto(s), ${cores} em paralelo…`);
-      await Promise.all(photoIdx.map(async (k) => {
-        try { const n = await autoPhoto(added[k]); if (n) { added[k] = n; straight++; } } catch (e) { /* fica como estava */ }
-        busyMsg(`A endireitar fotos: ${++done} de ${photoIdx.length} (${pool.size} em paralelo)…`);
-      }));
-    }
     insertPages(added);
     let msg = `${added.length} página(s) adicionada(s).`;
-    if (photos && $('photoAuto').checked) msg += ` Fotos endireitadas: ${straight} de ${photos}` + (straight < photos ? ' (as restantes ficaram como estavam, por falta de confiança na deteção: usa “Foto → página”, tecla P).' : '.');
-    else if (photos) msg += ' Para endireitar uma foto e pô-la no tamanho real, usa “Foto → página” (tecla P).';
+    if (photos && !$('photoAuto').checked) msg += ' Para endireitar uma foto e pô-la no tamanho real, usa “Foto → página” (tecla P).';
     status(msg, 'ok');
   } catch (e) {
     if (added.length) insertPages(added);
     status('Erro a abrir: ' + e.message, 'err');
   } finally { idle(); }
+  // "endireitar ao adicionar": propõe as malhas das fotos para rever; o texto lê-se depois de aplicar
+  const photoIds = photoIdx.map((k) => added[k].id);
+  if (photoIds.length && $('photoAuto').checked) {
+    await previewPages(photoIds.map((id) => S.pages.findIndex((x) => x.id === id)).filter((i) => i >= 0), $('ocrOnAdd').checked);
+    return;
+  }
+  // ler o texto das páginas novas (fotos, imagens, PDFs digitalizados; os PDFs digitais são ignorados)
+  if ($('ocrOnAdd').checked && added.length) {
+    const idxs = added.map((p) => S.pages.findIndex((x) => x.id === p.id)).filter((i) => i >= 0);
+    let any = false;
+    for (const i of idxs) if (S.pages[i].kind === 'img' || (await isScannedPdf(S.pages[i]))) { any = true; break; }
+    if (any) await ocrPages(idxs);
+  }
 }
 
 // ───────────────────────── digitalização ─────────────────────────
@@ -620,12 +624,12 @@ function autoLevelsFor(c) {
 }
 
 // Converte uma página PDF em imagem (para ângulo livre / níveis)
-async function rasterize(p, silent) {
+async function rasterize(p, silent, dpiOverride) {
   if (p.kind === 'img') return p;
-  const dpi = +$('rasterDpi').value || 300;
+  const dpi = dpiOverride || +$('rasterDpi').value || 300;
   if (!silent && !S.askedRaster) {
     S.askedRaster = true;
-    if (!confirm(`Esta operação converte a página PDF numa imagem a ${dpi} ppp (o texto deixa de ser selecionável nessa página).\n\nContinuar?`)) return null;
+    if (!confirm(tr(`Esta operação converte a página PDF numa imagem a ${dpi} ppp (o texto deixa de ser selecionável nessa página).\n\nContinuar?`))) return null;
   }
   const c = await renderPdf(p, dpi / 72);
   const n = await imgPageFromCanvas(c, dpi, p);
@@ -709,34 +713,177 @@ function autoLevels() {
 }
 
 // ───────────────────────── foto → página ─────────────────────────
-// S.photo = { id, busy } enquanto deteta; depois { id, det, mesh, W, H, edited }
+// S.photo = { id, busy } enquanto deteta; depois { id, det, dets, meshes, mesh, W, H, edited }:
+// uma grelha por página (duas num livro aberto: esquerda e direita); mesh = meshes[0]
 const FMT_NAMES = { a3: 'A3', a4: 'A4', a5: 'A5', a6: 'A6', letter: 'Carta', legal: 'Ofício' };
 const photoFmtArgs = () => [$('photoFmt').value, [+$('photoW').value || 210, +$('photoH').value || 297]];
-// Formato, tamanho em mm, píxeis e ppp da página corrigida
-function photoPlan(ph) { return Photo.planPage(ph.mesh, ph.W, ph.H, ...photoFmtArgs()); }
+// Formato, tamanho em mm, píxeis e ppp da página corrigida k
+function photoPlan(ph, k = 0) { return Photo.planPage(ph.meshes[k], ph.W, ph.H, ...photoFmtArgs()); }
 function photoInfoText(ph) {
-  const pl = photoPlan(ph);
-  const label = $('photoFmt').value === 'custom' ? 'medida própria'
-    : pl.assumed ? 'proporção medida, largura assumida de 210 mm — escolhe o formato'
-      : FMT_NAMES[pl.key] + (pl.auto ? ' (automático)' : '');
-  return `${pl.mm[0].toFixed(0)} × ${pl.mm[1].toFixed(0)} mm (${label}) · ${pl.sz.w} × ${pl.sz.h} px · ${Math.round(pl.dpi)} ppp`;
+  const one = (k) => {
+    const pl = photoPlan(ph, k);
+    const label = $('photoFmt').value === 'custom' ? 'medida própria'
+      : pl.assumed ? 'proporção medida, largura assumida de 210 mm — escolhe o formato'
+        : FMT_NAMES[pl.key] + (pl.auto ? ' (automático)' : '');
+    return `${pl.mm[0].toFixed(0)} × ${pl.mm[1].toFixed(0)} mm (${label}) · ${pl.sz.w} × ${pl.sz.h} px · ${Math.round(pl.dpi)} ppp`;
+  };
+  const n = ph.meshes.length, a = clamp(ph.active ?? 0, 0, n - 1);
+  return n > 1 ? `${n} páginas nesta foto (malha ativa: ${one(a)})` : one(0);
+}
+function setPhotoMeshes(ph, meshes) { ph.meshes = meshes; ph.mesh = meshes[0]; ph.active = clamp(ph.active ?? 0, 0, meshes.length - 1); }
+// Dados para treino: a malha proposta (ph.auto, guardada quando se deteta) e a final de cada foto corrigida.
+// Ficam na página que sai da correção (p.grid) e vão num <nome>.treino.zip ao lado do que se exporta,
+// com as fotos originais (as coordenadas são em píxeis dessas fotos).
+const recPhoto = new WeakMap(); // registo → blob da foto original
+function meshData(m) {
+  const N = m.N, nodes = [];
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) nodes.push(Photo.meshNode(m, i, j).map((v) => Math.round(v * 10) / 10));
+  return { N, nodes, fixed: m.fix ? Array.from(m.fix) : null };
+}
+function snapAuto(ph) { ph.auto = { spread: !!ph.det.spread, how: ph.det.how || '', meshes: ph.meshes.map(meshData) }; }
+function gridRecord(ph, src, skipped = false) {
+  const rec = { source: (src && src.name) || '', W: ph.W, H: ph.H, proposed: ph.auto || null, edited: !!ph.edited, skipped,
+    final: skipped ? [] : meshOrder(ph).map((k) => meshData(ph.meshes[k])) };
+  if (src && src.blob) recPhoto.set(rec, src.blob);
+  return rec;
+}
+function setGrid(pages, rec) { pages.forEach((p, k) => { p.grid = rec; p.gridPart = k; }); }
+async function writeTrainingZip(path, list) {
+  const recs = [], pages = [];
+  list.forEach((p, n) => {
+    if (!p.grid) return;
+    let r = recs.indexOf(p.grid);
+    if (r < 0) { r = recs.length; recs.push(p.grid); }
+    pages.push({ page: n + 1, photo: r, mesh: p.gridPart || 0 });
+  });
+  if (!recs.length) return null;
+  const files = [], photos = [];
+  for (let r = 0; r < recs.length; r++) {
+    const rec = recs[r], blob = recPhoto.get(rec);
+    let file = null;
+    if (blob) {
+      const ext = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }[blob.type] || '.bin';
+      file = `fotos/${pad(r + 1, 3)}_${rec.source.replace(/\.[^.]+$/, '').replace(/[^\w.-]+/g, '_') || 'foto'}${ext}`;
+      files.push({ name: file, bytes: new Uint8Array(await blob.arrayBuffer()) });
+    }
+    photos.push({ ...rec, file });
+  }
+  const doc = { app: 'Pagloom', kind: 'treino', version: 1, saved: new Date().toISOString(),
+    note: 'file: foto original dentro do zip; nodes: pontos da malha N×N por linhas (x, y em píxeis dessa foto); fixed: 1 = ponto posto à mão; proposed = proposta automática, final[k] = página k corrigida (esquerda→direita); skipped = foto ignorada',
+    photos, pages };
+  files.unshift({ name: 'malhas.json', bytes: new TextEncoder().encode(JSON.stringify(doc, null, 1)) });
+  const out = path.replace(/(\.[^.\\/]+)?$/, '') + '.treino.zip';
+  await writeFile(out, makeZip(files));
+  return out;
+}
+// ZIP sem compressão (as fotos já vêm comprimidas): cabeçalhos locais + diretório central
+function makeZip(files) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  const d = new Date(), time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let off = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), crc = crc32(f.bytes, 0, f.bytes.length), n = f.bytes.length;
+    const h = new DataView(new ArrayBuffer(30));
+    [[0, 0x04034b50, 4], [4, 20, 2], [6, 0x0800, 2], [8, 0, 2], [10, time, 2], [12, date, 2], [14, crc, 4], [18, n, 4], [22, n, 4], [26, name.length, 2], [28, 0, 2]]
+      .forEach(([o, v, s]) => (s === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true)));
+    const c = new DataView(new ArrayBuffer(46));
+    [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0x0800, 2], [10, 0, 2], [12, time, 2], [14, date, 2], [16, crc, 4], [20, n, 4], [24, n, 4], [28, name.length, 2], [30, 0, 2], [32, 0, 2], [34, 0, 2], [36, 0, 2], [38, 0, 4], [42, off, 4]]
+      .forEach(([o, v, s]) => (s === 4 ? c.setUint32(o, v, true) : c.setUint16(o, v, true)));
+    parts.push(new Uint8Array(h.buffer), name, f.bytes); central.push(new Uint8Array(c.buffer), name);
+    off += 30 + name.length + n;
+  }
+  const csize = central.reduce((s, a) => s + a.length, 0), e = new DataView(new ArrayBuffer(22));
+  [[0, 0x06054b50, 4], [4, 0, 2], [6, 0, 2], [8, files.length, 2], [10, files.length, 2], [12, csize, 4], [16, off, 4], [20, 0, 2]]
+    .forEach(([o, v, s]) => (s === 4 ? e.setUint32(o, v, true) : e.setUint16(o, v, true)));
+  const all = [...parts, ...central, new Uint8Array(e.buffer)], out = new Uint8Array(all.reduce((s, a) => s + a.length, 0));
+  let p = 0; for (const a of all) { out.set(a, p); p += a.length; }
+  return out;
+}
+// Malhas à mão: cada malha é uma página. "＋ Malha" insere uma malha de tamanho fixo (35% da largura da foto,
+// proporção A) na metade da foto que ainda não tem malhas, para depois acertar pelos cantos; "− Malha" apaga a ativa.
+const MESH_COLORS = ['#5b93f5', '#3ccf6a', '#f5a623', '#e45bbd', '#5bd0e4', '#c0c45b'];
+function addMesh() {
+  const ph = S.photo;
+  if (!ph || !ph.mesh) return;
+  const W = ph.W, H = ph.H, w = 0.35 * W, h = Math.min(w * 1.414, 0.9 * H);
+  const cx = ph.meshes.reduce((s, m) => s + m.corners.reduce((t, p) => t + p[0], 0) / 4, 0) / ph.meshes.length; // centro das malhas que já há
+  const x0 = clamp((cx < W / 2 ? 0.75 : 0.25) * W - w / 2, 0, W - w), y0 = (H - h) / 2, x1 = x0 + w, y1 = y0 + h;
+  const det = { found: true, corners: [[x0, y0], [x1, y0], [x1, y1], [x0, y1]], content: null, quality: ph.det.quality };
+  ph.dets = [...ph.dets, det];
+  setPhotoMeshes(ph, [...ph.meshes, Photo.buildMesh(det, ph.mesh.N)]);
+  ph.active = ph.meshes.length - 1; ph.edited = true; ph.det.spread = ph.meshes.length > 1;
+  renderThumbs(false); updateToolPanel(); draw();
+}
+function removeMesh() {
+  const ph = S.photo;
+  if (!ph || !ph.mesh) return;
+  if (ph.meshes.length <= 1) { status('Fica pelo menos uma malha. Para não corrigir esta foto, usa “Ignorar esta página” ou “Cancelar”.', 'err'); return; }
+  const a = clamp(ph.active ?? ph.meshes.length - 1, 0, ph.meshes.length - 1);
+  ph.dets = ph.dets.filter((_, k) => k !== a);
+  setPhotoMeshes(ph, ph.meshes.filter((_, k) => k !== a));
+  ph.active = Math.max(0, a - 1); ph.edited = true; ph.det.spread = ph.meshes.length > 1;
+  updateToolPanel(); draw();
+}
+// Ordem das páginas ao aplicar: da esquerda para a direita; quando estão empilhadas, de cima para baixo
+function meshOrder(ph) {
+  const c = ph.meshes.map((m, k) => ({ k, x: m.corners.reduce((s, p) => s + p[0], 0) / 4, y: m.corners.reduce((s, p) => s + p[1], 0) / 4 }));
+  return c.sort((a, b) => (Math.abs(a.x - b.x) > 0.1 * ph.W ? a.x - b.x : a.y - b.y)).map((o) => o.k);
 }
 
+// Página PDF que é uma digitalização (imagem, sem texto visível nem desenho vetorial; o texto invisível do OCR
+// não conta): pode ir ao Foto → página. Os PDFs digitais (texto e vetores) já estão direitos e ficam de fora.
+async function isScannedPdf(p) {
+  if (p.kind !== 'pdf') return false;
+  if (p.scan !== undefined) return p.scan;
+  const OPS = pdfjsLib.OPS, page = await S.src.get(p.src).doc.getPage(p.index + 1), ops = await page.getOperatorList();
+  const SHOW = [OPS.showText, OPS.showSpacedText, OPS.nextLineShowText, OPS.nextLineSetSpacingShowText];
+  let images = 0, text = 0, paths = 0, mode = 0, maxW = 0;
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const f = ops.fnArray[i];
+    if (f === OPS.paintImageXObject || f === OPS.paintInlineImageXObject || f === OPS.paintImageXObjectRepeat) {
+      images++;
+      const a = ops.argsArray[i];
+      if (f === OPS.paintImageXObject && a && a[1] > maxW) maxW = a[1]; // [id, largura, altura] em píxeis
+    }
+    else if (f === OPS.setTextRenderingMode) mode = ops.argsArray[i][0];
+    else if (SHOW.includes(f) && mode !== 3) text++; // 3 = invisível (camada de OCR)
+    else if (f === OPS.constructPath) paths++;
+  }
+  // resolução da digitalização (largura da imagem ÷ largura da página), para converter sem perder detalhe
+  const pw = totalRot(p) % 180 ? p.hPt : p.wPt;
+  p.scanDpi = maxW ? Math.round(clamp(maxW / (pw / 72), 72, 1200)) : 0;
+  return (p.scan = images > 0 && text === 0 && paths < 20);
+}
+// Converte uma página PDF digitalizada à resolução da própria digitalização (nunca abaixo da do separador Página)
+const rasterizeScan = (p) => rasterize(p, true, Math.max(p.scanDpi || 0, +$('rasterDpi').value || 300));
+
 async function startPhoto() {
-  const p = curPage();
-  if (!p || p.kind !== 'img') return;
+  let p = curPage();
+  if (!p) return;
+  S.photo = { id: p.id, busy: true };
+  if (p.kind === 'pdf') { // só PDFs digitalizados; converte-se a página em imagem e segue como uma foto
+    if (!(await isScannedPdf(p))) { S.photo = { id: p.id, vector: true }; updateToolPanel(); return; }
+    let n;
+    busy('Em processamento…');
+    try { n = await rasterizeScan(p); } finally { idle(); }
+    if (S.tool !== 'photo' || curPage() !== p) return;
+    pushUndo(); S.pages[S.cur] = n; S.photo = { id: n.id, busy: true }; refresh(false);
+    p = n;
+  }
   const id = p.id;
-  S.photo = { id, busy: true };
-  busy('A procurar a folha (resolução total)…');
+  busy('Em processamento…');
   try {
     const W = p.w, H = p.h;
     pool.size = Math.max(pool.size, 1);
+    const spread = $('photoSpread').value !== 'never';
     const { det } = await poolRun(async () => {
       const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
-      return { msg: { op: 'detect', img: px.img }, transfer: px.transfer };
+      return { msg: { op: 'detect', img: px.img, spread }, transfer: px.transfer };
     });
     if (S.tool !== 'photo' || !curPage() || curPage().id !== id) return;
-    S.photo = { id, det, mesh: Photo.buildMesh(det, +$('photoN').value), W, H, edited: false };
+    const dets = det.spread ? det.pages : [det], N = +$('photoN').value;
+    S.photo = { id, det, dets, W, H, edited: false };
+    setPhotoMeshes(S.photo, dets.map((d) => Photo.buildMesh(d, N))); snapAuto(S.photo);
     const q = det.quality, why = q.why.length ? ': ' + q.why.join('; ') : '';
     status(q.level === 'alta' ? 'Folha encontrada (confiança alta). Enter para aplicar.'
       : q.level === 'média' ? `Confiança média${why}. Confirma os pontos e carrega em Enter.`
@@ -750,84 +897,359 @@ async function startPhoto() {
 function regridPhoto(N) {
   const ph = S.photo;
   if (!ph || !ph.mesh || ph.mesh.N === N) return;
-  if (!ph.edited) { ph.mesh = Photo.buildMesh(ph.det, N); return; }
-  const map = Photo.meshMapper(ph.mesh), m = { N, corners: ph.mesh.corners.map((c) => c.slice()), res: new Float64Array(N * N * 2) };
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const q = map(i / (N - 1), j / (N - 1)); Photo.moveNode(m, i, j, q[0], q[1]); }
-  ph.mesh = m;
+  if (!ph.edited) { setPhotoMeshes(ph, ph.dets.map((d) => Photo.buildMesh(d, N))); return; }
+  setPhotoMeshes(ph, ph.meshes.map((old) => {
+    const map = Photo.meshMapper(old), m = { N, corners: old.corners.map((c) => c.slice()), res: new Float64Array(N * N * 2) };
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const q = map(i / (N - 1), j / (N - 1)); Photo.moveNode(m, i, j, q[0], q[1]); }
+    return m;
+  }));
 }
+// Aplica: uma página corrigida por grelha (num livro aberto, a foto dá lugar à página esquerda e à direita)
 async function applyPhoto() {
   const ph = S.photo, p = curPage();
   if (!ph || !ph.mesh || !p || ph.id !== p.id) return;
-  const { sz, dpi } = photoPlan(ph), mesh = ph.mesh;
+  const order = meshOrder(ph), plans = order.map((k) => photoPlan(ph, k)), meshes = order.map((k) => ph.meshes[k]), at = S.cur;
   setTool('pan');
-  await editPages([S.cur], 'Foto → página', async (c) => {
-    const { data } = await poolRun(() => { const px = pixelsOf(c); return { msg: { op: 'warp', img: px.img, mesh, w: sz.w, h: sz.h }, transfer: px.transfer }; });
-    return canvasFrom(data, sz.w, sz.h, dpi);
-  });
+  busy('Em processamento…');
+  try {
+    const c = await pageCanvas(p), out = [];
+    for (let k = 0; k < meshes.length; k++) {
+      const { sz, dpi } = plans[k];
+      const { data } = await poolRun(() => { const px = pixelsOf(c); return { msg: { op: 'warp', img: px.img, mesh: meshes[k], w: sz.w, h: sz.h }, transfer: px.transfer }; });
+      const o = canvasFrom(data, sz.w, sz.h, dpi);
+      out.push(await imgPageFromCanvas(o, dpi, p));
+      o.width = o.height = 0;
+    }
+    c.width = c.height = 0;
+    setGrid(out, gridRecord(ph, p));
+    pushUndo();
+    S.pages.splice(at, 1, ...out);
+    S.cur = at; S.sel = new Set(out.map((x) => x.id));
+    refresh();
+    status('Foto → página — feito.', 'ok');
+  } catch (e) { status('Foto → página: ' + e.message, 'err'); } finally { idle(); }
 }
-// Ao adicionar fotos com "endireitar logo" (num worker): devolve a página corrigida, ou null se não encontrar a folha
-// Lote: Foto → página num intervalo de páginas (imagens), várias ao mesmo tempo, uma por núcleo.
-// As de confiança baixa ficam como estavam. Desfaz-se tudo de uma vez com Ctrl+Z.
+// ───────────────────────── lote: prever → rever → aplicar ─────────────────────────
+// O lote não aplica nada logo: calcula as malhas de todas as páginas (propostas), mostra-as para confirmar ou
+// corrigir à mão, e só no fim "Aplicar todas" corrige tudo de uma vez (um só Ctrl+Z).
+// S.review = { props: Map(id da página → proposta), readAfter } ; proposta = { id, det, dets, meshes, mesh, W, H, edited, skip }
 function runBatch() {
   const n = S.pages.length, a = clamp(Math.round(+$('btFrom').value) || 1, 1, n), b = clamp(Math.round(+$('btTo').value) || n, 1, n);
   const idxs = [];
   for (let i = Math.min(a, b) - 1; i < Math.max(a, b); i++) idxs.push(i);
-  batchPhoto(idxs);
+  previewPages(idxs);
 }
-async function batchPhoto(range) {
-  const idxs = range.filter((i) => S.pages[i].kind === 'img');
-  if (!idxs.length) { status('Nesse intervalo não há páginas de imagem (as páginas PDF já estão direitas).', 'err'); return; }
+// readAfter: ler o texto depois de aplicar (fotos acabadas de adicionar com "ler o texto sempre")
+async function previewPages(range, readAfter = false) {
+  // fotos e PDFs digitalizados; os PDFs digitais (vetoriais) ficam de fora
+  const idxs = [];
+  for (const i of range) if (S.pages[i].kind === 'img' || (await isScannedPdf(S.pages[i]))) idxs.push(i);
+  if (!idxs.length) { status('Nesse intervalo só há páginas PDF digitais (vetoriais): já estão direitas.', 'err'); return; }
   setTool('pan');
-  const results = new Map();
-  let done = 0, failed = 0;
-  busy('Foto → página: a preparar…');
+  busy('Em processamento…');
   try {
-    const cores = await setPoolFor(idxs.map((i) => S.pages[i]));
-    busyMsg(`Foto → página: 0 de ${idxs.length} (${cores} em paralelo)…`);
+    // PDFs digitalizados: passam a imagem já aqui (as malhas são em píxeis da imagem)
+    const scans = [];
+    for (const i of idxs) if (S.pages[i].kind === 'pdf') scans.push(i);
+    if (scans.length) { pushUndo(); for (const i of scans) S.pages[i] = await rasterizeScan(S.pages[i]); }
+    const cores = await setPoolFor(idxs.map((i) => S.pages[i])), N = +$('photoN').value, spread = $('photoSpread').value !== 'never';
+    const props = new Map();
+    let done = 0;
+    busyMsg(`Em processamento: 0 de ${idxs.length} (${cores} em paralelo)…`);
     await Promise.all(idxs.map(async (i) => {
-      try { const n = await autoPhoto(S.pages[i]); if (n) results.set(i, n); } catch (e) { failed++; }
-      busyMsg(`Foto → página: ${++done} de ${idxs.length} (${pool.size} em paralelo)…`);
+      const p = S.pages[i];
+      const { det } = await poolRun(async () => {
+        const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
+        return { msg: { op: 'detect', img: px.img, spread }, transfer: px.transfer };
+      });
+      const prop = { id: p.id, det, dets: det.spread ? det.pages : [det], W: p.w, H: p.h, edited: false, skip: false };
+      setPhotoMeshes(prop, prop.dets.map((d) => Photo.buildMesh(d, N))); snapAuto(prop);
+      props.set(p.id, prop);
+      busyMsg(`Em processamento: ${++done} de ${idxs.length} (${pool.size} em paralelo)…`);
     }));
-    if (results.size) {
-      pushUndo();
-      for (const [i, n] of results) S.pages[i] = n;
-      S.sel = new Set(idxs.map((i) => S.pages[i].id));
-      refresh();
-    }
-    const left = idxs.length - results.size;
-    status(`Foto → página: ${results.size} de ${idxs.length} página(s) endireitada(s).` +
-      (left ? ` ${left} ficaram como estavam (confiança baixa${failed ? ' ou erro' : ''}): usa P nessas.` : ''), results.size ? 'ok' : 'err');
+    S.review = { props, readAfter };
+    S.cur = idxs[0]; S.sel = new Set([S.pages[S.cur].id]);
+    setTool('review'); refresh(); // marcas ▱ nas miniaturas
+    status(`Malhas propostas para ${props.size} página(s). Confirma ou corrige cada uma (setas para mudar de página) e carrega em “Aplicar todas”.`, 'ok');
+  } catch (e) {
+    status('Foto → página: ' + e.message, 'err');
   } finally { idle(); }
+}
+// Proposta da página atual (a malha que aparece e se edita no modo de revisão)
+function reviewProp() { const p = curPage(); return S.review && p ? S.review.props.get(p.id) || null : null; }
+function reviewIds() { return S.pages.filter((p) => S.review && S.review.props.has(p.id)).map((p) => p.id); }
+// Trocar entre dividir (livro aberto) e não dividir só nesta página: deteta outra vez com a opção contrária
+async function toggleSpread() {
+  const prop = reviewProp(), p = curPage();
+  if (!prop) return;
+  busy('Em processamento…');
+  try {
+    const spread = !prop.det.spread;
+    const { det } = await poolRun(async () => {
+      const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
+      return { msg: { op: 'detect', img: px.img, spread }, transfer: px.transfer };
+    });
+    const N = +$('photoN').value;
+    if (spread && !det.spread) {
+      // não encontrou a lombada: divide a malha atual ao meio e deixa acertar os pontos da lombada à mão
+      const [a, b, c, d] = prop.mesh.corners, mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], mt = mid(a, b), mb = mid(d, c);
+      const halves = [[a, mt, mb, d], [mt, b, c, mb]].map((corners) => ({ found: true, corners, content: null, quality: prop.det.quality }));
+      prop.det = { found: true, spread: true, pages: halves, corners: [a, b, c, d], quality: prop.det.quality }; prop.dets = halves; prop.edited = true;
+      setPhotoMeshes(prop, halves.map((h) => Photo.buildMesh(h, N)));
+      status('Não encontrei a lombada: dividi ao meio. Acerta os pontos do meio sobre a lombada.', 'ok');
+    } else {
+      prop.det = det; prop.dets = det.spread ? det.pages : [det]; prop.edited = false;
+      setPhotoMeshes(prop, prop.dets.map((d) => Photo.buildMesh(d, N)));
+    }
+    S.photo = prop;
+  } catch (e) { status('Foto → página: ' + e.message, 'err'); } finally { idle(); updateToolPanel(); draw(); }
+}
+// Aplica todas as propostas que não foram ignoradas; os PDFs digitais e as ignoradas ficam como estão
+async function applyReview() {
+  if (!S.review) return;
+  const { props, readAfter } = S.review, todo = [];
+  S.pages.forEach((p, i) => { const pr = props.get(p.id); if (pr && !pr.skip) todo.push({ i, p, pr }); });
+  if (!todo.length) { status('Não há malhas para aplicar (todas ignoradas).', 'err'); return; }
+  busy('Em processamento…');
+  try {
+    let done = 0;
+    const results = new Map();
+    await Promise.all(todo.map(async ({ i, p, pr }) => {
+      const pages = [];
+      for (const k of meshOrder(pr)) { // uma página por malha, da esquerda para a direita
+        const { sz, dpi } = photoPlan(pr, k), mesh = pr.meshes[k];
+        const { data } = await poolRun(async () => {
+          const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
+          return { msg: { op: 'warp', img: px.img, mesh, w: sz.w, h: sz.h }, transfer: px.transfer };
+        });
+        const o = canvasFrom(data, sz.w, sz.h, dpi);
+        pages.push(await imgPageFromCanvas(o, dpi, p));
+        o.width = o.height = 0;
+      }
+      setGrid(pages, gridRecord(pr, p));
+      results.set(i, pages);
+      busyMsg(`Em processamento: ${++done} de ${todo.length} (${pool.size} em paralelo)…`);
+    }));
+    // as ignoradas também contam para o treino (ex.: capas que não eram para endireitar)
+    S.pages.forEach((p) => { const pr = props.get(p.id); if (pr && pr.skip) setGrid([p], gridRecord(pr, p, true)); });
+    pushUndo();
+    // de trás para a frente: um livro aberto troca uma página por duas e muda os índices seguintes
+    const ids = [];
+    for (const i of [...results.keys()].sort((a, b) => b - a)) { const n = results.get(i); S.pages.splice(i, 1, ...n); ids.unshift(...n.map((x) => x.id)); }
+    S.review = null;
+    S.sel = new Set(ids); S.cur = S.pages.findIndex((x) => x.id === ids[0]);
+    setTool('pan'); refresh();
+    status(`Foto → página aplicado: ${todo.length} foto(s) → ${ids.length} página(s).`, 'ok');
+    // ler o texto das páginas do lote (as corrigidas e as ignoradas, que também foram adicionadas)
+    const skipped = [...props.values()].filter((pr) => pr.skip).map((pr) => pr.id);
+    if (readAfter) await ocrPages([...ids, ...skipped].map((id) => S.pages.findIndex((x) => x.id === id)).filter((i) => i >= 0).sort((a, b) => a - b));
+  } catch (e) { status('Foto → página: ' + e.message, 'err'); } finally { idle(); }
+}
+function cancelReview() {
+  if (!S.review) return;
+  if ([...S.review.props.values()].some((p) => p.edited) && !confirm(tr('Desistir da revisão? Os ajustes feitos às malhas perdem-se.'))) return;
+  S.review = null; setTool('pan'); refresh(false);
+  status('Revisão cancelada: nada foi alterado.');
 }
 // Ajusta o número de workers à memória livre e à maior foto do lote; devolve esse número
 async function setPoolFor(pages) {
   await refreshSys();
-  const mpx = Math.max(12, ...pages.map((p) => (p.w * p.h) / 1e6));
+  const k = (+$('rasterDpi').value || 300) / 72; // páginas PDF: tamanho depois de convertidas
+  const kk = (p) => Math.max(k, (p.scanDpi || 0) / 72);
+  const mpx = Math.max(12, ...pages.map((p) => (p.kind === 'pdf' ? p.wPt * p.hPt * kk(p) ** 2 : p.w * p.h) / 1e6));
   pool.size = Math.min(workersFor(mpx), pages.length);
   poolNext();
   return pool.size;
 }
-async function autoPhoto(p) {
-  const [fmt, custom] = photoFmtArgs(), N = +$('photoN').value;
-  const r = await poolRun(async () => {
-    const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
-    return { msg: { op: 'auto', img: px.img, N, fmt, custom }, transfer: px.transfer };
-  });
-  if (!r.found) return null;
-  const o = canvasFrom(r.data, r.plan.sz.w, r.plan.sz.h, r.plan.dpi);
-  const n = await imgPageFromCanvas(o, r.plan.dpi, p);
-  o.width = o.height = 0;
-  return n;
+// ───────────────────────── texto (OCR com Tesseract, no próprio PC) ─────────────────────────
+// Cada página lida fica com p.ocr = { text, words: [[texto, x0, y0, x1, y1] em píxeis da imagem], langs, conf }.
+// Lê fotos, imagens e PDFs digitalizados (convertidos em imagem); os PDFs digitais já têm texto.
+const OCR_LANGS = [['ocrPor', 'por'], ['ocrEng', 'eng'], ['ocrIta', 'ita'], ['ocrSpa', 'spa'], ['ocrFra', 'fra']];
+const OCR_NAMES = { por: 'PT', eng: 'EN', ita: 'IT', spa: 'ES', fra: 'FR' };
+const ocrLangs = () => OCR_LANGS.filter(([id]) => $(id).checked).map(([, l]) => l).join('+') || 'por';
+function ocrWorkers(count) { // ~0,4 GB por worker; respeita "Fotos em paralelo"
+  const byMem = Math.max(1, Math.floor((sys.memAvail * 0.75) / 0.4e9));
+  return Math.max(1, Math.min(count, sys.cpus - 1, 8, byMem, +$('photoCores').value || 99, pool.cap));
 }
+// Deteção da língua: lê uma faixa do meio de até 2 páginas com as cinco línguas e conta palavras e terminações típicas.
+// Fica a mais provável, e a segunda se tiver pelo menos 60% dos pontos (documentos mistos).
+const LANG_CUES = {
+  por: { w: 'não são uma para com os do da dos das ao pelo pela mais também está é então como seu sua'.split(' '), re: /(ção|ções|ão|ões)$/ },
+  eng: { w: 'the and of to is in that for with are on this be by it from was which or'.split(' '), re: /(ing|tion|ly)$/ },
+  // só palavras que não existem em português (as comuns, como "para", "como", "se", davam PT + ES)
+  spa: { w: 'el los las es del muy también más pero sus hay esta ese eso'.split(' '), re: /(ción|ciones|ñ)/ },
+  fra: { w: 'le les et des du est une pour dans pas sur au qui avec ce sont nous vous'.split(' '), re: /(eau|eaux|ment)$/ },
+  ita: { w: 'il che di gli per una non sono del della con nel è anche questo più come'.split(' '), re: /(zione|zioni|mente)$/ },
+};
+function scoreLangs(text) {
+  // palavras de uma letra ficam de fora: o OCR de manuscrito e riscos gera muitos "y", "e", "a" soltos
+  const words = (text.toLowerCase().match(/[a-zà-ÿ]+/g) || []).filter((w) => w.length > 1), sc = {};
+  for (const [l, c] of Object.entries(LANG_CUES)) {
+    const set = new Set(c.w);
+    sc[l] = words.reduce((s, w) => s + (set.has(w) ? 1 : 0) + (w.length > 4 && c.re.test(w) ? 0.5 : 0), 0);
+  }
+  return sc;
+}
+// Língua(s) de um texto pelas pontuações: a mais provável, e a segunda se tiver ≥ 60% dos pontos; null se houver pouco texto
+function pickLangs(total) {
+  const order = Object.entries(total).sort((a, b) => b[1] - a[1]);
+  if (!order.length || order[0][1] < 3) return null;
+  return order.filter(([, s], i) => i === 0 || (i === 1 && s >= order[0][1] * 0.6)).map(([l]) => l).join('+');
+}
+// Língua de cada página (um manual pode ter uma língua por página): a faixa do meio de cada página é lida com
+// as cinco línguas, várias páginas ao mesmo tempo. Devolve Map(índice → línguas); sem texto suficiente fica `fallback`.
+async function detectLangsPerPage(items, opts, n, fallback) {
+  const sched = Tesseract.createScheduler(), out = new Map();
+  try {
+    await Promise.all(Array.from({ length: n }, async () => sched.addWorker(await Tesseract.createWorker('por+eng+spa+fra+ita', 1, opts))));
+    await Promise.all(items.map(async ({ i, p }) => {
+      const bmp = await createImageBitmap(p.blob), y0 = Math.round(bmp.height * 0.3), h = Math.round(bmp.height * 0.35);
+      const c = canvas(bmp.width, h); ctx2d(c).drawImage(bmp, 0, -y0); bmp.close(); // faixa do meio da página
+      const { data } = await sched.addJob('recognize', c);
+      c.width = c.height = 0;
+      out.set(i, pickLangs(scoreLangs(data.text)) || fallback);
+    }));
+  } finally { await sched.terminate(); }
+  return out;
+}
+function runOcrRange() {
+  const n = S.pages.length, a = clamp(Math.round(+$('ocFrom').value) || 1, 1, n), b = clamp(Math.round(+$('ocTo').value) || n, 1, n);
+  const idxs = [];
+  for (let i = Math.min(a, b) - 1; i < Math.max(a, b); i++) idxs.push(i);
+  ocrPages(idxs);
+}
+async function ocrPages(range) {
+  const idxs = [];
+  for (const i of range) if (S.pages[i].kind === 'img' || (await isScannedPdf(S.pages[i]))) idxs.push(i);
+  const vector = range.length - idxs.length;
+  if (!idxs.length) { status('Nesse intervalo só há páginas PDF digitais: já têm texto.', 'err'); return; }
+  setTool('pan');
+  busy('Em processamento…');
+  let sched = null;
+  try {
+    await refreshSys();
+    if (!window.Tesseract) await loadScript('lib/tesseract/tesseract.min.js');
+    // errorHandler: sem ele, uma falha (ex.: falta o ficheiro de uma língua) rebenta fora do try e a leitura fica parada
+    const opts = { workerPath: 'lib/tesseract/worker.min.js', corePath: 'lib/tesseract/', langPath: 'lib/tesseract/', gzip: true, errorHandler: () => {} };
+    const items = [];
+    for (const i of idxs) { const p = S.pages[i]; items.push({ i, p: p.kind === 'pdf' ? await rasterizeScan(p) : p }); } // digitalização: lê-se a imagem
+    const n = ocrWorkers(idxs.length), manual = ocrLangs();
+    // língua de cada página, ou a escolhida à mão para todas
+    const langsOf = $('ocrDetect').checked ? await detectLangsPerPage(items, opts, n, manual) : new Map(items.map(({ i }) => [i, manual]));
+    const groups = new Map(); // páginas agrupadas pela língua: cada grupo é lido com os seus workers
+    for (const it of items) { const l = langsOf.get(it.i); if (!groups.has(l)) groups.set(l, []); groups.get(l).push(it); }
+    const results = new Map();
+    let done = 0, words = 0;
+    const msg = () => busyMsg(`Em processamento: ${done} de ${idxs.length} (${n} em paralelo)…`);
+    msg();
+    for (const [langs, list] of groups) {
+      sched = Tesseract.createScheduler();
+      await Promise.all(Array.from({ length: Math.min(n, list.length) }, async () => sched.addWorker(await Tesseract.createWorker(langs, 1, opts))));
+      await Promise.all(list.map(async ({ i, p }) => {
+        const { data } = await sched.addJob('recognize', p.blob, {}, { text: true, blocks: true });
+        const ws = [];
+        for (const b of data.blocks || []) for (const pa of b.paragraphs) for (const l of pa.lines) for (const w of l.words) {
+          if (w.text.trim() && w.confidence >= 30) ws.push([w.text, w.bbox.x0, w.bbox.y0, w.bbox.x1, w.bbox.y1]);
+        }
+        results.set(i, Object.assign({}, p, { ocr: { text: data.text, words: ws, langs, conf: Math.round(data.confidence) } }));
+        words += ws.length; done++; msg();
+      }));
+      await sched.terminate(); sched = null;
+    }
+    pushUndo();
+    for (const [i, np] of results) S.pages[i] = np;
+    refresh(false);
+    showTab('text');
+    // resumo das línguas: "PT (3), EN + ES (1)"
+    const nameOf = (l) => l.split('+').map((x) => OCR_NAMES[x]).join(' + ');
+    const summary = [...groups].map(([l, list]) => `${nameOf(l)} (${list.length})`).join(', ');
+    const detected = $('ocrDetect').checked ? ` Línguas: ${summary}.` : '';
+    status(`Texto lido em ${results.size} página(s), ${words} palavras.` + detected + (vector ? ` ${vector} página(s) PDF digital(is) já tinham texto.` : '') + ' Vê no separador Texto.', 'ok');
+    $('ocrLangHint').textContent = $('ocrDetect').checked ? '(última: ' + summary + ')' : '';
+  } catch (e) {
+    status('Ler texto: ' + e.message, 'err');
+  } finally {
+    if (sched) sched.terminate(); // liberta a memória dos workers
+    idle();
+  }
+}
+function updateTextPane() {
+  const p = curPage(), t = $('ocrText');
+  if (!t) return;
+  t.value = !p ? '' : p.ocr ? p.ocr.text
+    : p.kind === 'pdf' && p.scan === false ? '(PDF digital: o texto já está no PDF.)'
+      : '(Esta página ainda não foi lida. Usa “Ler texto”.)';
+}
+function ocrAllText() {
+  return S.pages.map((p, i) => (p.ocr ? `--- Página ${i + 1} ---\n${p.ocr.text.trim()}\n` : '')).filter(Boolean).join('\n');
+}
+async function saveOcrText() {
+  const txt = ocrAllText();
+  if (!txt) { status('Ainda não há páginas lidas. Usa “Ler texto”.', 'err'); return; }
+  try {
+    const ch = await api(`choose?name=${encodeURIComponent(defaultName() + '.txt')}&ext=txt&desc=${encodeURIComponent(tr('Texto'))}`);
+    if (ch.cancelled) return;
+    if (ch.error) throw new Error(ch.error);
+    await writeFile(ch.path, new TextEncoder().encode(txt.replace(/\n/g, '\r\n')));
+    status('Texto gravado: ' + ch.path, 'ok');
+  } catch (e) { status('Gravar texto: ' + e.message, 'err'); }
+}
+// PDF pesquisável: as palavras lidas ficam por cima da imagem, em texto invisível (modo 3, como no OCRmyPDF)
+const safeChars = new Map();
+function safeText(font, s) { // só caracteres que a fonte padrão consegue codificar (WinAnsi: inclui os acentos de PT/ES/FR/IT)
+  let o = '';
+  for (const ch of s) {
+    if (!safeChars.has(ch)) { let ok = true; try { font.encodeText(ch); } catch (e) { ok = false; } safeChars.set(ch, ok); }
+    o += safeChars.get(ch) ? ch : '?';
+  }
+  return o;
+}
+function addTextLayer(pg, p, font) {
+  const L = window.PDFLib, key = pg.node.newFontDictionary(font.name, font.ref), k = 72 / p.dpi, H = p.h * k;
+  const ops = [L.pushGraphicsState(), L.beginText(), L.setTextRenderingMode(L.TextRenderingMode.Invisible)];
+  for (const [t, x0, y0, x1, y1] of p.ocr.words) {
+    const s = safeText(font, t);
+    if (!s.trim()) continue;
+    // largura certa por escala horizontal (Tz); com espaçamento entre letras, quem extrai o texto lê "P r o c e s s o s"
+    const size = Math.max(1, (y1 - y0) * k * 0.85), w = font.widthOfTextAtSize(s, size), target = (x1 - x0) * k;
+    ops.push(L.setFontAndSize(key, size), L.PDFOperator.of('Tz', [L.PDFNumber.of(clamp((target / (w || 1)) * 100, 10, 1000))]),
+      L.setTextMatrix(1, 0, 0, 1, x0 * k, H - y1 * k + (y1 - y0) * k * 0.2), L.showText(font.encodeText(s + ' ')));
+  }
+  ops.push(L.endText(), L.popGraphicsState());
+  pg.pushOperators(...ops);
+}
+
 function photoNodeAt(sx, sy) { // ponto da grelha perto do rato (coordenadas do ecrã)
   const ph = S.photo, v = S.vt;
   if (!ph || !ph.mesh || !v) return null;
-  const N = ph.mesh.N;
   let best = null;
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const q = Photo.meshNode(ph.mesh, i, j), d = Math.hypot(v.ox + q[0] * v.s - sx, v.oy + q[1] * v.s - sy);
-    if (d < 12 && (!best || d < best.d)) best = { i, j, d };
-  }
+  ph.meshes.forEach((m, k) => {
+    for (let j = 0; j < m.N; j++) for (let i = 0; i < m.N; i++) {
+      const q = Photo.meshNode(m, i, j), d = Math.hypot(v.ox + q[0] * v.s - sx, v.oy + q[1] * v.s - sy);
+      if (d < 12 && (!best || d < best.d)) best = { k, i, j, d };
+    }
+  });
+  return best;
+}
+function photoMeshAt(x, y) { // malha que contém o ponto (coordenadas da imagem); a mais pequena se se sobrepõem
+  const ph = S.photo;
+  if (!ph || !ph.mesh) return -1;
+  let best = -1, bestA = Infinity;
+  ph.meshes.forEach((m, k) => {
+    const N = m.N, poly = [];
+    for (let i = 0; i < N; i++) poly.push(Photo.meshNode(m, i, 0));
+    for (let j = 1; j < N; j++) poly.push(Photo.meshNode(m, N - 1, j));
+    for (let i = N - 2; i >= 0; i--) poly.push(Photo.meshNode(m, i, N - 1));
+    for (let j = N - 2; j > 0; j--) poly.push(Photo.meshNode(m, 0, j));
+    let inside = false, area = 0;
+    for (let a = 0, b = poly.length - 1; a < poly.length; b = a++) {
+      const [xa, ya] = poly[a], [xb, yb] = poly[b];
+      if ((ya > y) !== (yb > y) && x < xb + (y - yb) * (xa - xb) / (ya - yb)) inside = !inside;
+      area += xb * ya - xa * yb;
+    }
+    area = Math.abs(area / 2);
+    if (inside && area < bestA) { best = k; bestA = area; }
+  });
   return best;
 }
 
@@ -841,7 +1263,7 @@ function go(i) {
 }
 function deleteSel() {
   const idx = selIdx(); if (!idx.length) return;
-  if (idx.length > 1 && !confirm(`Apagar ${idx.length} páginas?`)) return;
+  if (idx.length > 1 && !confirm(tr(`Apagar ${idx.length} páginas?`))) return;
   pushUndo();
   const ids = new Set(idx.map((i) => S.pages[i].id));
   S.pages = S.pages.filter((p) => !ids.has(p.id));
@@ -870,7 +1292,7 @@ function moveSelTo(targetIdx) { // insere as selecionadas antes de targetIdx
 }
 function newDoc() {
   if (!S.pages.length) return;
-  if (S.dirty && !confirm('Começar um documento novo? As páginas atuais saem da lista (podes desfazer com Ctrl+Z).')) return;
+  if (S.dirty && !confirm(tr('Começar um documento novo? As páginas atuais saem da lista (podes desfazer com Ctrl+Z).'))) return;
   pushUndo();
   S.pages = []; S.cur = -1; S.sel.clear(); S.dirty = false;
   refresh();
@@ -888,6 +1310,8 @@ function renderThumbs() {
     const img = document.createElement('img'); img.src = p.thumb || ''; d.appendChild(img);
     const n = document.createElement('div'); n.className = 'n'; n.textContent = (i + 1) + (p.name ? ' · ' + p.name : ''); d.appendChild(n);
     if (p.kind === 'pdf') { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'PDF'; b.title = 'Página PDF original (vetorial)'; d.appendChild(b); }
+    const rp = S.review && S.review.props.get(p.id); // revisão do lote: esta página tem malha proposta
+    if (rp) { const b = document.createElement('span'); b.className = 'badge rv' + (rp.skip ? ' skip' : ''); b.textContent = rp.skip ? '⊘' : '▱'; b.title = rp.skip ? 'Ignorada: fica como está' : 'Malha proposta (por aplicar)'; d.appendChild(b); }
     d.onclick = (e) => {
       if (e.ctrlKey) { S.sel.has(p.id) ? S.sel.delete(p.id) : S.sel.add(p.id); S.cur = i; if (!S.sel.size) S.sel.add(p.id); }
       else if (e.shiftKey && S.cur >= 0) { const [a, b] = [Math.min(S.cur, i), Math.max(S.cur, i)]; S.sel = new Set(S.pages.slice(a, b + 1).map((x) => x.id)); S.cur = i; }
@@ -943,8 +1367,8 @@ function draw() {
   for (const s of slots()) {
     const d = getDisplay(s.p);
     const padT = s.label ? 28 : 14, padS = 14;
-    if (s.label) { x.fillStyle = s.prev ? '#7f8896' : '#cfe0ff'; x.font = '12px Segoe UI, sans-serif'; x.textAlign = 'center'; x.fillText(s.label, s.x + s.w / 2, 18); }
-    if (!d) { x.fillStyle = '#7f8896'; x.textAlign = 'center'; x.font = '14px Segoe UI'; x.fillText('A carregar…', s.x + s.w / 2, s.y + s.h / 2); continue; }
+    if (s.label) { x.fillStyle = s.prev ? '#7f8896' : '#cfe0ff'; x.font = '12px Segoe UI, sans-serif'; x.textAlign = 'center'; x.fillText(tr(s.label), s.x + s.w / 2, 18); }
+    if (!d) { x.fillStyle = '#7f8896'; x.textAlign = 'center'; x.font = '14px Segoe UI'; x.fillText(tr('A carregar…'), s.x + s.w / 2, s.y + s.h / 2); continue; }
     const fit = Math.min((s.w - 2 * padS) / d.w, (s.h - padT - padS) / d.h);
     const sc = fit * (s.prev ? 1 : S.zoomF);
     const ox = s.x + s.w / 2 - (d.w * sc) / 2 + (s.prev ? 0 : S.panX);
@@ -994,7 +1418,7 @@ function drawOverlay(x, slot) {
     }
     x.restore();
   }
-  if (S.tool === 'photo' && S.photo && S.photo.mesh) drawPhotoGrid(x, slot);
+  if ((S.tool === 'photo' || S.tool === 'review') && S.photo && S.photo.mesh) drawPhotoGrid(x, slot);
   if (S.tool === 'line' && S.line) {
     const l = S.line;
     x.save(); x.strokeStyle = '#ffcc33'; x.lineWidth = 2; x.setLineDash([6, 4]);
@@ -1003,43 +1427,52 @@ function drawOverlay(x, slot) {
   }
 }
 function drawPhotoGrid(x, slot) {
-  const v = S.vt, m = S.photo.mesh, N = m.N, map = Photo.meshMapper(m);
+  const v = S.vt, ph = S.photo, maps = ph.meshes.map((m) => Photo.meshMapper(m));
   const sc = (q) => [v.ox + q[0] * v.s, v.oy + q[1] * v.s];
   const K = 48, line = (f) => { const q0 = sc(f(0)); x.moveTo(q0[0], q0[1]); for (let k = 1; k <= K; k++) { const q = sc(f(k / K)); x.lineTo(q[0], q[1]); } };
   x.save(); x.beginPath(); x.rect(slot.x, slot.y, slot.w, slot.h); x.clip();
-  // escurece o que fica fora da folha
+  if (ph.skip) x.globalAlpha = 0.35; // revisão: página ignorada (fica como está)
+  // escurece o que fica fora das folhas
   x.beginPath(); x.rect(slot.x, slot.y, slot.w, slot.h);
-  const outline = [];
-  for (let k = 0; k < K; k++) outline.push(map(k / K, 0));
-  for (let k = 0; k < K; k++) outline.push(map(1, k / K));
-  for (let k = K; k > 0; k--) outline.push(map(k / K, 1));
-  for (let k = K; k > 0; k--) outline.push(map(0, k / K));
-  outline.forEach((q, k) => { const s = sc(q); if (k) x.lineTo(s[0], s[1]); else x.moveTo(s[0], s[1]); });
-  x.closePath(); x.fillStyle = 'rgba(0,0,0,.5)'; x.fill('evenodd');
-  // linhas da grelha
-  x.beginPath();
-  for (let i = 1; i < N - 1; i++) { line((t) => map(i / (N - 1), t)); line((t) => map(t, i / (N - 1))); }
-  x.strokeStyle = 'rgba(91,147,245,.75)'; x.lineWidth = 1; x.stroke();
-  x.beginPath(); line((t) => map(t, 0)); line((t) => map(1, t)); line((t) => map(t, 1)); line((t) => map(0, t));
-  x.strokeStyle = '#5b93f5'; x.lineWidth = 2; x.stroke();
-  // análise: onde as linhas de texto foram medidas (verde)
-  const ct = S.photo.det && S.photo.det.content;
-  if (S.photoShow && ct && ct.samples) {
-    const h = Photo.homography(S.photo.det.corners);
-    x.fillStyle = ct.apply ? 'rgba(60,220,90,.9)' : 'rgba(255,200,60,.9)';
-    for (const [u, vv] of ct.samples) { const s = sc(Photo.applyH(h, u, vv)); x.fillRect(s[0] - 2, s[1] - 2, 4, 4); }
+  for (const map of maps) {
+    const outline = [];
+    for (let k = 0; k < K; k++) outline.push(map(k / K, 0));
+    for (let k = 0; k < K; k++) outline.push(map(1, k / K));
+    for (let k = K; k > 0; k--) outline.push(map(k / K, 1));
+    for (let k = K; k > 0; k--) outline.push(map(0, k / K));
+    outline.forEach((q, k) => { const s = sc(q); if (k) x.lineTo(s[0], s[1]); else x.moveTo(s[0], s[1]); });
+    x.closePath();
   }
-  // pontos
+  x.fillStyle = 'rgba(0,0,0,.5)'; x.fill('evenodd');
   const act = drag && drag.kind === 'node' ? drag : null;
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-    const s = sc(Photo.meshNode(m, i, j)), corner = (i === 0 || i === N - 1) && (j === 0 || j === N - 1);
-    x.beginPath(); x.arc(s[0], s[1], corner ? 7 : 5, 0, Math.PI * 2);
-    x.fillStyle = act && act.i === i && act.j === j ? '#ffcc33' : '#fff'; x.fill();
-    x.strokeStyle = '#2f6fe0'; x.lineWidth = 2; x.stroke();
-  }
+  ph.meshes.forEach((m, mk) => {
+    const map = maps[mk], N = m.N, pd = ph.dets[mk];
+    // linhas da grelha
+    x.beginPath();
+    for (let i = 1; i < N - 1; i++) { line((t) => map(i / (N - 1), t)); line((t) => map(t, i / (N - 1))); }
+    x.strokeStyle = 'rgba(91,147,245,.75)'; x.lineWidth = 1; x.stroke();
+    x.beginPath(); line((t) => map(t, 0)); line((t) => map(1, t)); line((t) => map(t, 1)); line((t) => map(0, t));
+    const col = MESH_COLORS[mk % MESH_COLORS.length], on = ph.meshes.length > 1 && mk === ph.active;
+    x.strokeStyle = col; x.lineWidth = on ? 4 : 2; x.stroke(); // uma cor por malha (página); a ativa mais grossa
+    // análise: onde as linhas de texto foram medidas (verde)
+    const ct = pd && pd.content;
+    if (S.photoShow && ct && ct.samples) {
+      const h = Photo.homography(pd.corners);
+      x.fillStyle = ct.apply ? 'rgba(60,220,90,.9)' : 'rgba(255,200,60,.9)';
+      for (const [u, vv] of ct.samples) { const s = sc(Photo.applyH(h, u, vv)); x.fillRect(s[0] - 2, s[1] - 2, 4, 4); }
+    }
+    // pontos (quadrado cheio = posto à mão, fica fixo; duplo clique solta-o)
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const s = sc(Photo.meshNode(m, i, j)), corner = (i === 0 || i === N - 1) && (j === 0 || j === N - 1), fixed = Photo.isFixed(m, i, j);
+      x.beginPath();
+      if (fixed) x.rect(s[0] - 5, s[1] - 5, 10, 10); else x.arc(s[0], s[1], corner ? 7 : 5, 0, Math.PI * 2);
+      x.fillStyle = act && act.k === mk && act.i === i && act.j === j ? '#ffcc33' : fixed ? col : '#fff'; x.fill();
+      x.strokeStyle = col; x.lineWidth = 2; x.stroke();
+    }
+  });
   // lupa enquanto se arrasta um ponto
   if (act && v.bmp) {
-    const q = Photo.meshNode(m, act.i, act.j), R = 70, Z = 4, cx = slot.x + 16 + R, cy = slot.y + 16 + R;
+    const q = Photo.meshNode(ph.meshes[act.k], act.i, act.j), R = 70, Z = 4, cx = slot.x + 16 + R, cy = slot.y + 16 + R;
     x.save(); x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.clip();
     x.fillStyle = '#000'; x.fillRect(cx - R, cy - R, 2 * R, 2 * R);
     const src = R / (v.s * Z); // meia largura da zona da foto mostrada (px da foto)
@@ -1069,11 +1502,12 @@ view.addEventListener('mousedown', (e) => {
     return;
   }
   const v = S.vt;
-  if (e.button === 0 && S.tool === 'photo') {
+  if (e.button === 0 && (S.tool === 'photo' || S.tool === 'review')) {
     const n = photoNodeAt(b.sx, b.sy);
-    if (n) { drag = { kind: 'node', i: n.i, j: n.j }; draw(); return; }
+    if (n) { drag = { kind: 'node', k: n.k, i: n.i, j: n.j }; S.photo.active = n.k; draw(); return; }
   }
-  if (e.button === 1 || S.tool === 'pan' || S.tool === 'photo') { drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, px: S.panX, py: S.panY }; view.style.cursor = 'grabbing'; return; }
+  if (e.button === 2 && (S.tool === 'photo' || S.tool === 'review')) return; // clique direito: ver 'contextmenu'
+  if (e.button === 1 || S.tool === 'pan' || S.tool === 'photo' || S.tool === 'review') { drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, px: S.panX, py: S.panY }; view.style.cursor = 'grabbing'; return; }
   if (e.button !== 0) return;
   if (S.tool === 'crop') {
     const r = S.crop;
@@ -1090,6 +1524,22 @@ view.addEventListener('mousedown', (e) => {
   if (S.tool === 'line') { drag = { kind: 'line' }; S.line = { x0: b.x, y0: b.y, x1: b.x, y1: b.y }; return; }
   if (S.tool === 'white' || S.tool === 'black') { pickLevel(b.x, b.y, S.tool); return; }
   if (S.tool === 'angle') { drag = { kind: 'angle', sx: e.clientX, a0: S.angle }; }
+});
+// Duplo clique num ponto posto à mão: solta-o (volta a seguir as arestas)
+view.addEventListener('dblclick', (e) => {
+  if (S.tool !== 'photo' && S.tool !== 'review') return;
+  const b = toBmp(e), n = b && photoNodeAt(b.sx, b.sy);
+  if (n && Photo.freeNode(S.photo.meshes[n.k], n.i, n.j)) draw();
+});
+// Clique direito em cima de uma malha: realça-a e pergunta se a remove
+view.addEventListener('contextmenu', (e) => {
+  if (S.tool !== 'photo' && S.tool !== 'review') return;
+  e.preventDefault();
+  const b = toBmp(e), ph = S.photo; if (!b || !ph || !ph.mesh) return;
+  const k = photoMeshAt(b.x, b.y); if (k < 0) return;
+  if (ph.meshes.length <= 1) { removeMesh(); return; } // só mostra o aviso
+  ph.active = k; draw();
+  setTimeout(() => { if (S.photo === ph && confirm(tr('Remover esta malha (a realçada)?'))) removeMesh(); }, 30);
 });
 window.addEventListener('mousemove', (e) => {
   if (!drag) { updateCursor(e); return; }
@@ -1111,7 +1561,7 @@ window.addEventListener('mousemove', (e) => {
     S.crop = { x, y, w: x1 - x, h: y1 - y };
   } else if (drag.kind === 'node') {
     if (!S.photo || !S.photo.mesh) return;
-    Photo.moveNode(S.photo.mesh, drag.i, drag.j, clamp(b.x, 0, v.w), clamp(b.y, 0, v.h));
+    Photo.dragNode(S.photo.meshes[drag.k], drag.i, drag.j, clamp(b.x, 0, v.w), clamp(b.y, 0, v.h));
     S.photo.edited = true;
   } else if (drag.kind === 'line') {
     S.line.x1 = b.x; S.line.y1 = b.y;
@@ -1142,7 +1592,7 @@ function updateCursor(e) {
     if (S.tool === 'pan') c = 'grab';
     else if (S.tool === 'crop' || S.tool === 'line' || S.tool === 'white' || S.tool === 'black') c = 'crosshair';
     else if (S.tool === 'angle') c = 'ew-resize';
-    else if (S.tool === 'photo') c = photoNodeAt(b.sx, b.sy) ? 'move' : 'grab';
+    else if (S.tool === 'photo' || S.tool === 'review') c = photoNodeAt(b.sx, b.sy) ? 'move' : 'grab';
     if (S.tool === 'crop' && S.crop && S.vt) {
       const v = S.vt, r = S.crop;
       const pts = handlePts(v.ox + r.x * v.s, v.oy + r.y * v.s, r.w * v.s, r.h * v.s);
@@ -1178,6 +1628,10 @@ function fit() { S.zoomF = 1; S.panX = S.panY = 0; draw(); }
 // ───────────────────────── ferramentas ─────────────────────────
 function resetToolState() { S.crop = null; S.line = null; S.angle = 0; S.photo = null; updateToolPanel(); }
 function setTool(t) {
+  if (S.review && t !== 'review') { // sair da revisão por outra ferramenta = desistir dela
+    if ([...S.review.props.values()].some((p) => p.edited) && !confirm(tr('Desistir da revisão? Os ajustes feitos às malhas perdem-se.'))) return;
+    S.review = null; renderThumbs(false);
+  }
   S.tool = t; resetToolState();
   document.querySelectorAll('.tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === t));
   if (t === 'crop' && S.vt) S.crop = null;
@@ -1220,20 +1674,49 @@ function updateToolPanel() {
     $('lvAuto').onclick = autoLevels;
   } else if (t === 'black') {
     tp.innerHTML = '<span class="msg">Clica numa zona que devia ser preta (texto ou tinta mais escura).</span><button id="tNo">Fechar (Esc)</button>';
+  } else if (t === 'review') {
+    const prop = reviewProp(), ids = reviewIds(), k = ids.indexOf(p.id) + 1;
+    S.photo = prop;
+    const goRel = (d) => { const j = ids.indexOf(p.id), id = ids[j < 0 ? 0 : clamp(j + d, 0, ids.length - 1)]; go(S.pages.findIndex((x) => x.id === id)); };
+    tp.innerHTML = (prop ? `<span class="msg">Rever as malhas: página ${k} de ${ids.length}</span>` : '<span class="msg">Esta página não faz parte do lote.</span>') +
+      '<button id="rvPrev" title="Página anterior do lote (←)">◀</button><button id="rvNext" title="Página seguinte do lote (→)">▶</button>' +
+      (prop ? `<button id="rvSplit">${prop.det.spread ? 'Não dividir esta' : 'Dividir esta (livro aberto)'}</button>` +
+        `<button id="rvSkip">${prop.skip ? 'Incluir esta página' : 'Ignorar esta página'}</button>` +
+        `<span class="msg" id="phInfo">${prop.skip ? '(ignorada: fica como está)' : photoInfoText(prop)}</span>` : '') +
+      (prop ? '<button id="mAdd" title="Acrescentar uma malha (uma página); depois arrasta os cantos para o sítio">＋ Malha</button><button id="mDel" title="Apagar a malha ativa (ou clique direito em cima da malha)">− Malha</button>' : '') +
+      '<button id="rvOk" class="primary">Aplicar todas (Enter)</button><button id="rvNo">Cancelar (Esc)</button>';
+    $('rvPrev').onclick = () => goRel(-1);
+    $('rvNext').onclick = () => goRel(1);
+    if (prop) {
+      $('rvSplit').onclick = toggleSpread;
+      $('rvSkip').onclick = () => { prop.skip = !prop.skip; renderThumbs(false); updateToolPanel(); draw(); };
+    }
+    if (prop) { $('mAdd').onclick = addMesh; $('mDel').onclick = removeMesh; }
+    $('rvOk').onclick = applyReview;
+    $('rvNo').onclick = cancelReview;
   } else if (t === 'batch') {
     const n = S.pages.length, sel = selIdx();
     const a = sel.length > 1 ? Math.min(...sel) + 1 : 1, b = sel.length > 1 ? Math.max(...sel) + 1 : n;
     tp.innerHTML = '<span class="msg">Foto → página em lote: da página</span>' +
       `<input type="number" id="btFrom" min="1" max="${n}" value="${a}"><span class="msg">à página</span>` +
       `<input type="number" id="btTo" min="1" max="${n}" value="${b}"><span class="msg">de ${n}</span>` +
-      '<button id="btGo" class="primary">Processar (Enter)</button><button id="tNo">Cancelar (Esc)</button>' +
-      '<span class="msg">Várias ao mesmo tempo; as de confiança baixa ficam como estão.</span>';
+      '<button id="btGo" class="primary">Prever malhas (Enter)</button><button id="tNo">Cancelar (Esc)</button>' +
+      '<span class="msg">Mostra as malhas de todas para confirmares ou corrigires; só aplica no fim.</span>';
     $('btGo').onclick = runBatch;
+  } else if (t === 'ocr') {
+    const n = S.pages.length, sel = selIdx();
+    const a = sel.length > 1 ? Math.min(...sel) + 1 : 1, b = sel.length > 1 ? Math.max(...sel) + 1 : n;
+    tp.innerHTML = '<span class="msg">Ler texto: da página</span>' +
+      `<input type="number" id="ocFrom" min="1" max="${n}" value="${a}"><span class="msg">à página</span>` +
+      `<input type="number" id="ocTo" min="1" max="${n}" value="${b}"><span class="msg">de ${n} · línguas: ${ocrLangs().split('+').map((l) => OCR_NAMES[l]).join(' + ')}</span>` +
+      '<button id="ocGo" class="primary">Ler (Enter)</button><button id="ocLang">Línguas…</button><button id="tNo">Cancelar (Esc)</button>';
+    $('ocGo').onclick = runOcrRange;
+    $('ocLang').onclick = () => showTab('text');
   } else if (t === 'photo') {
-    if (p.kind !== 'img') { tp.innerHTML = '<span class="msg">Foto → página serve para fotos e imagens. As páginas PDF já estão direitas.</span>'; return; }
     const ph = S.photo;
-    if (!ph || ph.id !== p.id) { if (!ph || !ph.busy) startPhoto(); tp.innerHTML = '<span class="msg">A procurar a folha…</span>'; return; }
-    if (ph.busy) { tp.innerHTML = '<span class="msg">A procurar a folha…</span>'; return; }
+    if (ph && ph.id === p.id && ph.vector) { tp.innerHTML = '<span class="msg">PDF digital (texto e vetores): já está direito, não precisa de Foto → página. Serve para fotos e PDFs digitalizados.</span><button id="tNo">Fechar (Esc)</button>'; return; }
+    if (!ph || ph.id !== p.id) { if (!ph || !ph.busy) startPhoto(); tp.innerHTML = '<span class="msg">Em processamento…</span>'; return; }
+    if (ph.busy) { tp.innerHTML = '<span class="msg">Em processamento…</span>'; return; }
     const custom = $('photoFmt').value === 'custom';
     tp.innerHTML = '<span class="msg">Arrasta os pontos para as bordas da folha (Ctrl+roda para aproximar).</span>' +
       `<span class="msg">Grelha</span><select id="phN">${$('photoN').innerHTML}</select>` +
@@ -1242,12 +1725,14 @@ function updateToolPanel() {
       `<span class="msg" id="phInfo">${photoInfoText(ph)}</span>` +
       `<span class="msg">· confiança ${ph.det.quality.level}${photoContentText(ph.det.content)}</span>` +
       `<label class="msg"><input type="checkbox" id="phShow"${S.photoShow ? ' checked' : ''}> mostrar análise</label>` +
+      '<button id="mAdd" title="Acrescentar uma malha (uma página); depois arrasta os cantos para o sítio">＋ Malha</button><button id="mDel" title="Apagar a malha ativa (ou clique direito em cima da malha)">− Malha</button>' +
       '<button id="phOk" class="primary">Aplicar (Enter)</button><button id="phRe">Detetar de novo</button><button id="phNo">Cancelar (Esc)</button>';
     $('phN').value = String(ph.mesh.N); $('phF').value = $('photoFmt').value;
     $('phN').onchange = (e) => { $('photoN').value = e.target.value; saveSettings(); regridPhoto(+e.target.value); updateToolPanel(); draw(); };
     $('phF').onchange = (e) => { $('photoFmt').value = e.target.value; updatePhotoCustom(); saveSettings(); updateToolPanel(); };
     if (custom) for (const [a, b] of [['phW', 'photoW'], ['phH', 'photoH']]) $(a).oninput = (e) => { $(b).value = e.target.value; saveSettings(); $('phInfo').textContent = photoInfoText(ph); };
     $('phShow').onchange = (e) => { S.photoShow = e.target.checked; draw(); };
+    $('mAdd').onclick = addMesh; $('mDel').onclick = removeMesh;
     $('phOk').onclick = applyPhoto;
     $('phRe').onclick = () => { S.photo = null; updateToolPanel(); };
     $('phNo').onclick = () => setTool('pan');
@@ -1283,13 +1768,20 @@ function exportList() {
   if (sc === 'range') return parseRange($('range').value, S.pages.length).map((i) => S.pages[i]);
   return S.pages.slice();
 }
+// dpiOut: 0 = igual à original, −1 = nativa (sem alteração), > 0 = reduzir até esse valor
+const NATIVE = -1;
+// Imagem original da página, sem reamostrar nem recomprimir (para a resolução nativa), se o formato servir
+async function nativeBytes(p, types) {
+  if (p.kind !== 'img' || !types.some((t) => p.blob.type === t)) return null;
+  return new Uint8Array(await p.blob.arrayBuffer());
+}
 async function exportCanvas(p, dpiOut) {
   if (p.kind === 'pdf') {
-    const dpi = dpiOut || +$('rasterDpi').value || 300;
+    const dpi = dpiOut > 0 ? dpiOut : +$('rasterDpi').value || 300;
     return { c: await renderPdf(p, dpi / 72), dpi };
   }
   let dpi = p.dpi;
-  if (dpiOut && dpiOut < p.dpi - 0.5) {
+  if (dpiOut > 0 && dpiOut < p.dpi - 0.5) {
     dpi = dpiOut;
     const w = Math.max(1, Math.round(p.w * dpi / p.dpi)), h = Math.max(1, Math.round(p.h * dpi / p.dpi));
     const bmp = await createImageBitmap(p.blob, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' });
@@ -1298,7 +1790,8 @@ async function exportCanvas(p, dpiOut) {
   }
   return { c: await pageCanvas(p), dpi };
 }
-async function buildPdf(list, dpiOut, q, keepVector, lossless) {
+async function buildPdf(list, dpiOut, q, keepVector, lossless, searchable = $('searchable').checked) {
+  let font = null; // fonte da camada de texto (só se houver páginas lidas)
   const out = await PDFDocument.create();
   out.setProducer('Pagloom'); out.setCreator('Pagloom');
   const used = new Set();
@@ -1316,14 +1809,22 @@ async function buildPdf(list, dpiOut, q, keepVector, lossless) {
       out.addPage(cp);
       used.add(p.src);
     } else {
-      const { c } = await exportCanvas(p, dpiOut);
       const sz = pageSizePts(p);
       let img;
-      if (lossless) img = await out.embedPng(new Uint8Array(await (await toBlob(c, 'image/png')).arrayBuffer()));
-      else img = await out.embedJpg(new Uint8Array(await (await toBlob(c, 'image/jpeg', q)).arrayBuffer()));
-      c.width = c.height = 0;
+      const orig = dpiOut === NATIVE ? await nativeBytes(p, ['image/jpeg', 'image/png']) : null;
+      if (orig) img = p.blob.type === 'image/jpeg' ? await out.embedJpg(orig) : await out.embedPng(orig); // tal como está
+      else {
+        const { c } = await exportCanvas(p, dpiOut);
+        if (lossless) img = await out.embedPng(new Uint8Array(await (await toBlob(c, 'image/png')).arrayBuffer()));
+        else img = await out.embedJpg(new Uint8Array(await (await toBlob(c, 'image/jpeg', q)).arrayBuffer()));
+        c.width = c.height = 0;
+      }
       const pg = out.addPage([sz.w, sz.h]);
       pg.drawImage(img, { x: 0, y: 0, width: sz.w, height: sz.h });
+      if (searchable && p.kind === 'img' && p.ocr && p.ocr.words.length) {
+        if (!font) font = await out.embedFont(window.PDFLib.StandardFonts.Helvetica);
+        addTextLayer(pg, p, font);
+      }
     }
     await nextFrame();
   }
@@ -1414,6 +1915,8 @@ async function svgFor(p, dpiOut, q, lossless) {
   return new TextEncoder().encode(`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${mmW}mm" height="${mmH}mm" viewBox="0 0 ${w} ${h}">\n<image x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" xlink:href="${url}" href="${url}"/>\n</svg>\n`);
 }
 async function rasterFile(p, fmt, dpiOut, q) {
+  const orig = dpiOut === NATIVE ? await nativeBytes(p, [fmt === 'jpg' ? 'image/jpeg' : 'image/png']) : null;
+  if (orig) return fmt === 'jpg' ? setJpegDpi(orig, p.dpi) : orig; // ficheiro original, só com os ppp
   const { c, dpi } = await exportCanvas(p, dpiOut);
   let b = new Uint8Array(await (await toBlob(c, fmt === 'jpg' ? 'image/jpeg' : 'image/png', q)).arrayBuffer());
   c.width = c.height = 0;
@@ -1445,7 +1948,7 @@ async function doExport() {
   status('A abrir a janela “Guardar como”…');
   let ch;
   try {
-    ch = await api(`choose?name=${encodeURIComponent(defaultName() + '.' + fmt)}&ext=${fmt}&desc=${encodeURIComponent(desc)}`);
+    ch = await api(`choose?name=${encodeURIComponent(defaultName() + '.' + fmt)}&ext=${fmt}&desc=${encodeURIComponent(tr(desc))}`);
   } catch (e) { status('Não foi possível abrir a janela “Guardar como”: ' + e.message, 'err'); return; }
   if (ch.error) { status('Não foi possível abrir a janela “Guardar como”: ' + ch.error, 'err'); return; }
   if (ch.cancelled) { status('Exportação cancelada.'); return; }
@@ -1463,10 +1966,13 @@ async function doExport() {
         await nextFrame();
       }
     }
+    // malhas proposta e editada das páginas corrigidas + fotos originais (dados para treinar a deteção), sempre ao lado
+    let grid = '';
+    try { const g = await writeTrainingZip(ch.path, list); if (g) grid = ' + ' + g.split(/[\\/]/).pop(); } catch (e) { console.warn('treino.zip', e); }
     S.dirty = false; syncUnsaved();
     const first = written[0];
     const esc = (t) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-    status(`${ch.note ? esc(ch.note) + ' ' : ''}Exportado: ${esc(written.length === 1 ? first : written.length + ' ficheiros em ' + ch.dir)} — <a id="lnkReveal">mostrar na pasta</a>`, 'ok', true);
+    status(`${ch.note ? esc(ch.note) + ' ' : ''}Exportado: ${esc(written.length === 1 ? first : written.length + ' ficheiros em ' + ch.dir)}${esc(grid)} — <a id="lnkReveal">mostrar na pasta</a>`, 'ok', true);
     $('lnkReveal').onclick = () => api('reveal?path=' + encodeURIComponent(first));
     $('lastOut').textContent = 'Último: ' + first;
   } catch (e) {
@@ -1505,7 +2011,7 @@ function updateExportInfo() {
     const sz = pageSizePts(p), mm = (v) => (v / 72 * 25.4).toFixed(0);
     info = `Páginas a exportar: ${n}\nPágina atual: ${mm(sz.w)} × ${mm(sz.h)} mm`;
     if (p.kind === 'img') {
-      const d = +$('dpiOut').value, t = d && d < p.dpi ? d : p.dpi;
+      const d = +$('dpiOut').value, t = d > 0 && d < p.dpi ? d : p.dpi;
       info += `\n${p.w} × ${p.h} px a ${Math.round(p.dpi)} ppp → ${Math.round(p.w * t / p.dpi)} × ${Math.round(p.h * t / p.dpi)} px a ${Math.round(t)} ppp`;
     } else info += '\nPágina PDF original' + (S.src.get(p.src).lib ? ' (vetorial)' : ' (protegida: sai como imagem)');
   }
@@ -1525,7 +2031,8 @@ function refresh(scroll = true) {
   const n = S.pages.length;
   $('counter').textContent = n ? `${S.cur + 1} / ${n}` : '— / —';
   $('bPrev').disabled = S.cur <= 0; $('bNext').disabled = S.cur >= n - 1;
-  for (const id of ['bExport', 'bExport2', 'bDel', 'bDup', 'bRotL', 'bRotR', 'bAuto', 'bRescan', 'bSelAll', 'bNew', 'bPhotoBatch']) $(id).disabled = !n;
+  for (const id of ['bExport', 'bExport2', 'bDel', 'bDup', 'bRotL', 'bRotR', 'bAuto', 'bRescan', 'bSelAll', 'bNew', 'bPhotoBatch', 'bOcr', 'bOcr2']) $(id).disabled = !n;
+  updateTextPane();
   $('bUndo').disabled = !S.undo.length; $('bRedo').disabled = !S.redo.length;
   $('bDual').classList.toggle('toggled', S.dual);
   renderThumbs(scroll);
@@ -1552,8 +2059,8 @@ window.addEventListener('beforeunload', (e) => {
 
 // ───────────────────────── definições ─────────────────────────
 let settings = {};
-const SET_FIELDS = ['src', 'mode', 'dpiIn', 'area', 'bright', 'contrast', 'fmt', 'scope', 'dpiOut', 'quality', 'rasterDpi', 'photoN', 'photoFmt', 'photoW', 'photoH', 'photoCores'];
-const SET_CHECKS = ['keepVector', 'lossless', 'photoAuto'];
+const SET_FIELDS = ['src', 'mode', 'dpiIn', 'area', 'bright', 'contrast', 'fmt', 'scope', 'dpiOut', 'quality', 'rasterDpi', 'photoN', 'photoFmt', 'photoW', 'photoH', 'photoCores', 'uiLang', 'photoSpread'];
+const SET_CHECKS = ['keepVector', 'lossless', 'photoAuto', 'searchable', 'ocrPor', 'ocrEng', 'ocrIta', 'ocrSpa', 'ocrFra', 'ocrOnAdd', 'ocrDetect'];
 let saveT = 0;
 function saveSettings() {
   clearTimeout(saveT);
@@ -1601,10 +2108,25 @@ on('bFit', 'click', fit);
 on('bZoomIn', 'click', () => zoomBy(1.25));
 on('bZoomOut', 'click', () => zoomBy(0.8));
 document.querySelectorAll('.tool').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
-document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t === b));
-  document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('hidden', p.id !== 'pane-' + b.dataset.tab));
-}));
+// Língua da interface (PT / EN): traduz a página e diz ao programa em Go (aviso ao fechar, "Guardar como")
+function applyUiLang(l) {
+  setLang(l);
+  api('lang?l=' + l, { method: 'POST' }).catch(() => {});
+  draw();
+}
+on('uiLang', 'change', (e) => { applyUiLang(e.target.value); saveSettings(); refresh(false); });
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === name));
+  document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('hidden', p.id !== 'pane-' + name));
+}
+document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+on('bOcr', 'click', () => setTool('ocr'));
+on('bOcr2', 'click', () => setTool('ocr'));
+on('bOcrSave', 'click', saveOcrText);
+on('bOcrCopy', 'click', async () => {
+  try { await navigator.clipboard.writeText($('ocrText').value); status('Texto copiado.', 'ok'); }
+  catch (e) { $('ocrText').select(); document.execCommand('copy'); status('Texto copiado.', 'ok'); }
+});
 for (const id of ['bright', 'contrast', 'quality']) on(id, 'input', (e) => { $({ bright: 'brV', contrast: 'ctV', quality: 'qV' }[id]).textContent = e.target.value; });
 for (const id of [...SET_FIELDS, ...SET_CHECKS, 'dev']) on(id, 'change', () => { saveSettings(); updateExportInfo(); });
 on('photoFmt', 'change', () => { updatePhotoCustom(); if (S.tool === 'photo') updateToolPanel(); });
@@ -1640,7 +2162,8 @@ document.addEventListener('keydown', (e) => {
   if (typing || tag === 'SELECT') {
     if (k === 'Enter' && S.tool === 'angle') rotateAngle(S.angle);
     if (k === 'Enter' && S.tool === 'batch') runBatch();
-    if (k === 'Escape') { e.target.blur(); setTool('pan'); }
+    if (k === 'Enter' && S.tool === 'ocr') runOcrRange();
+    if (k === 'Escape') { e.target.blur(); if (S.tool === 'review') cancelReview(); else setTool('pan'); }
     return;
   }
   if (e.ctrlKey || e.altKey) return;
@@ -1651,9 +2174,10 @@ document.addEventListener('keydown', (e) => {
     case 'Home': go(0); break;
     case 'End': go(S.pages.length - 1); break;
     case 'Delete': deleteSel(); break;
-    case 'Enter': if (S.tool === 'crop') applyCrop(); else if (S.tool === 'angle') rotateAngle(S.angle); else if (S.tool === 'photo') applyPhoto(); else if (S.tool === 'batch') runBatch(); break;
+    case 'Enter': if (S.tool === 'crop') applyCrop(); else if (S.tool === 'angle') rotateAngle(S.angle); else if (S.tool === 'photo') applyPhoto(); else if (S.tool === 'batch') runBatch(); else if (S.tool === 'ocr') runOcrRange(); else if (S.tool === 'review') applyReview(); break;
     case 'p': case 'P': setTool(e.shiftKey ? 'batch' : 'photo'); break;
-    case 'Escape': setTool('pan'); break;
+    case 'o': case 'O': setTool('ocr'); break;
+    case 'Escape': if (S.tool === 'review') cancelReview(); else setTool('pan'); break;
     case 'r': case 'R': rotate90(true); break;
     case 'l': case 'L': rotate90(false); break;
     case 'c': case 'C': setTool('crop'); break;
@@ -1702,6 +2226,11 @@ setInterval(() => api('ping').catch(() => {}), 20000);
     if (info.os === 'linux') $('scanHint').textContent = 'As páginas novas entram a seguir à página atual. Em Linux usa o SANE (sane-utils; sane-airscan para scanners de rede).';
   } catch (e) {}
   await loadSettings();
+  // língua da interface: a guardada, ou a do sistema (português → PT, outras → EN)
+  const ui = settings.uiLang || ((navigator.language || '').toLowerCase().startsWith('pt') ? 'pt' : 'en');
+  $('uiLang').value = ui;
+  applyUiLang(ui);
+  startTranslation();
   refreshSys();
   refresh();
   await checkDeps();
@@ -1711,3 +2240,5 @@ setInterval(() => api('ping').catch(() => {}), 20000);
 // para testes
 window.__S = S;
 window.__addFiles = addFiles;
+window.__buildPdf = buildPdf; window.__writeTrainingZip = writeTrainingZip;
+window.__pdfjs = pdfjsLib;

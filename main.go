@@ -33,7 +33,16 @@ var (
 	lastPing = time.Now()
 	pingMu   sync.Mutex
 	unsaved  atomic.Bool // há páginas que ainda não foram exportadas (aviso ao fechar)
+	uiEN     atomic.Bool // interface em inglês (janelas do sistema: aviso ao fechar, "Guardar como")
 )
+
+// Texto na língua da interface (a interface diz qual é em /api/lang)
+func tr(pt, en string) string {
+	if uiEN.Load() {
+		return en
+	}
+	return pt
+}
 
 func randHex(n int) string {
 	b := make([]byte, n)
@@ -82,6 +91,10 @@ func api(w http.ResponseWriter, r *http.Request) {
 		pingMu.Lock()
 		lastPing = time.Now()
 		pingMu.Unlock()
+		writeJSON(w, map[string]bool{"ok": true})
+
+	case p == "lang":
+		uiEN.Store(q.Get("l") == "en")
 		writeJSON(w, map[string]bool{"ok": true})
 
 	case p == "unsaved":

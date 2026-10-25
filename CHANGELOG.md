@@ -2,6 +2,39 @@
 
 All notable changes to Pagloom are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] — 2026-10-26
+
+### Added
+**Interface**
+- **English interface**: a **PT | EN** selector in the header switches the whole app between Portuguese and English: every button, tab, hint, panel and message, plus the Windows close warning and the "Save as" dialog. The choice is remembered; the default follows the system language.
+
+**Text reading (OCR)**
+- **Read text** with Tesseract, entirely on the PC (nothing is sent anywhere): **Read text** button (key O) over a page range, several pages in parallel. Languages: Portuguese, English, Italian, Spanish and French. Works on photos, images and scanned PDF pages; printed text only (handwriting is not reliable).
+- **Language detected page by page**: each page is read with the language(s) found on it, so multilingual documents such as manuals come out right. The summary shows how many pages of each language were found.
+- **Text read whenever pages are added** (on by default; can be turned off in the Text tab).
+- **Text** tab: the text of the current page, Copy, and Save as `.txt` (all pages read).
+- **Searchable PDF**: when exporting to PDF, the text read is placed as an invisible layer over each image (like OCRmyPDF), so the PDF can be searched (Ctrl+F), selected and read by other tools and AIs.
+
+**Photo → page**
+- **Open books and manuals**: a photo with two pages side by side is split into a left and a right page, each straightened on its own (Page tab: split automatically / do not split). The spine is found from two adjacent page candidates, from the notches in the paper outline, or from the spine shadow.
+- **Preview → review → apply**: Batch (Shift+P) and "straighten photos as they are added" no longer change anything straight away. They propose the grids for every page; you go through the pages (arrow keys), confirm or fix each grid, skip a page or switch split / do not split, and **Apply all** (Enter) corrects everything at the end with a single Ctrl+Z. Esc cancels. Thumbnails show which pages have a proposal or are skipped. Text reading on add runs after applying.
+- **Grids by hand**: **＋ Grid** inserts a fixed-size grid in the free half of the photo, ready to drag into place; **− Grid**, or right-click on a grid, deletes it (the grid is highlighted and you confirm). Each grid becomes one page, left to right (top to bottom when stacked), each in its own colour. When no spine is found, **Split** divides the grid down the middle for you to adjust.
+- **Point hierarchy when editing a grid**: corners first, then edge points, then inner points. Moving a corner re-spaces the edge and inner points evenly (in the perspective of the corners); moving an edge point reshapes the inner points. A point you drag yourself stays where you put it (filled square) and is never moved automatically; double-click it to release it.
+- Works on **scanned PDF pages** too (an image with no visible text or vector drawing; an invisible OCR layer is allowed), converted at the scan's own resolution. Digital PDF pages (text and vectors) are left out, with a message.
+- Sheet detection also uses colour: paper is neutral, while light wood and coloured objects are not.
+- **Training data**: when the export includes pages from Photo → page, a `<name>.treino.zip` is saved beside it with the original photos and a `malhas.json` holding, for each photo, the proposed grid and the final edited grid (points in pixels of the original photo, which points were placed by hand, skipped photos). It is collected to improve the detection later; see `treino/README.md`.
+
+**Export**
+- Resolution **Native (unchanged)**: image pages go into the PDF, or into PNG/JPEG files, with their original bytes, no resampling or recompression. The other resolutions are unchanged.
+
+### Changed
+- Progress messages now simply read "Processing…" (with the page count in batches).
+- Confidence grades are no longer shown in the batch review: you see the grids and decide.
+
+### For developers
+- `treino/`: `avaliar.py` (standard-library Python) measures how far the automatic proposals in the collected `*.treino.zip` files are from the hand-corrected grids. The data itself (`treino/dados/`) stays out of git.
+- New libraries in `fetch-libs.sh`: Tesseract.js 6.0.1 and tesseract.js-core 6.0.0 (Apache-2.0), with the `best_int` language data for por, eng, ita, spa and fra.
+
 ## [1.2.0] — 2026-10-25
 
 ### Added
@@ -53,6 +86,7 @@ First public release.
 - TIFF import is not supported.
 - No macOS build.
 
+[1.3.0]: https://github.com/3devangelist/pagloom/releases/tag/v1.3.0
 [1.2.0]: https://github.com/3devangelist/pagloom/releases/tag/v1.2.0
 [1.1.0]: https://github.com/3devangelist/pagloom/releases/tag/v1.1.0
 [1.0.0]: https://github.com/3devangelist/pagloom/releases/tag/v1.0.0
