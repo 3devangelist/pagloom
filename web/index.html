@@ -16,7 +16,7 @@
     <div class="brand"><img src="logo.svg" alt="" class="logo">Pagloom <span class="sub">Scanner &amp; PDF Utility</span></div>
     <button id="bScan" class="primary" title="Digitalizar (Espaço)">⎙ Digitalizar</button>
     <button id="bOpen" title="Adicionar PDFs ou imagens (Ctrl+O)">＋ Adicionar PDF / imagens</button>
-    <input type="file" id="fileIn" multiple accept=".pdf,application/pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
+    <input type="file" id="fileIn" multiple accept=".pdf,application/pdf,image/png,image/jpeg,image/webp,image/gif,image/bmp,.heic,.heif,image/heic,image/heif" hidden>
     <span class="sep"></span>
     <button id="bUndo" title="Desfazer (Ctrl+Z)">↶ Desfazer</button>
     <button id="bRedo" title="Refazer (Ctrl+Y)">↷ Refazer</button>
@@ -50,6 +50,8 @@
           <button class="tool" data-tool="crop" title="Recortar (C)">⛶ Recortar</button>
           <button class="tool" data-tool="angle" title="Rodar por ângulo (A)">∠ Ângulo</button>
           <button class="tool" data-tool="line" title="Endireitar: desenha uma linha ao longo do texto (T)">⟋ Endireitar</button>
+          <button class="tool" data-tool="photo" title="Foto → página: encontra a folha numa foto e corrige a perspetiva, a curvatura e o tamanho (P)">▱ Foto → página</button>
+          <button id="bPhotoBatch" title="Foto → página em todas as páginas selecionadas, várias ao mesmo tempo (Shift+P)">▱ Lote</button>
           <button class="tool" data-tool="white" title="Clica numa zona que devia ser branca (W)">◻ Ponto branco</button>
           <button class="tool" data-tool="black" title="Clica numa zona que devia ser preta (K)">◼ Ponto preto</button>
           <button id="bAuto" title="Níveis automáticos">Auto níveis</button>
@@ -174,9 +176,38 @@
         </select>
         <p class="hint">Recortar e rodar 90° mantêm as páginas PDF vetoriais. Ângulo livre, endireitar e níveis convertem a página em imagem a esta resolução.</p>
         <hr>
+        <label>Foto → página: grelha de pontos</label>
+        <select id="photoN">
+          <option value="3">3 × 3</option><option value="4" selected>4 × 4</option><option value="5">5 × 5</option>
+          <option value="6">6 × 6</option><option value="8">8 × 8</option>
+        </select>
+        <label>Formato da folha</label>
+        <select id="photoFmt">
+          <option value="auto">Automático (pela perspetiva)</option>
+          <option value="a4">A4 (210 × 297 mm)</option>
+          <option value="a5">A5 (148 × 210 mm)</option>
+          <option value="a3">A3 (297 × 420 mm)</option>
+          <option value="a6">A6 (105 × 148 mm)</option>
+          <option value="letter">Carta (216 × 279 mm)</option>
+          <option value="legal">Ofício (216 × 356 mm)</option>
+          <option value="custom">Outra medida…</option>
+        </select>
+        <div class="row hidden" id="photoCustom">
+          <input type="number" id="photoW" min="10" max="2000" step="0.5" value="155"><span>×</span>
+          <input type="number" id="photoH" min="10" max="2000" step="0.5" value="235"><span>mm</span>
+        </div>
+        <label class="chk"><input type="checkbox" id="photoAuto"> Endireitar logo as fotos ao adicionar</label>
+        <label>Fotos em paralelo (núcleos a usar)</label>
+        <select id="photoCores">
+          <option value="0">Automático (pela memória livre e núcleos)</option>
+          <option value="1">1</option><option value="2">2</option><option value="4">4</option><option value="8">8</option>
+        </select>
+        <p class="hint" id="coresHint"></p>
+        <p class="hint">Fotos do telefone (JPEG ou HEIC): a ferramenta Foto → página encontra a folha, corrige a perspetiva e a curvatura das bordas e põe a página no tamanho real.</p>
+        <hr>
         <p class="hint"><b>Atalhos</b><br>
         Espaço digitaliza · ← → páginas · Ctrl+Z / Ctrl+Y<br>
-        C recortar · A ângulo · T endireitar · W ponto branco · K ponto preto · H/Esc mover<br>
+        C recortar · A ângulo · T endireitar · P foto → página · W ponto branco · K ponto preto · H/Esc mover<br>
         R / L rodar 90° · D anterior+atual · 0 ajustar · + − zoom · roda do rato com Ctrl = zoom<br>
         Delete apaga · Ctrl+O adicionar · Ctrl+E exportar · arrasta miniaturas para reordenar</p>
       </div>
@@ -184,6 +215,17 @@
   </div>
   <footer id="status">Pronto.</footer>
 </div>
+<dialog id="expDlg">
+  <form method="dialog">
+    <h3>Exportar</h3>
+    <label>Formato</label><select id="dFmt"></select>
+    <label>Páginas</label><select id="dScope"></select>
+    <input type="text" id="dRange" placeholder="ex.: 1-3, 5, 8-10" class="hidden">
+    <label>Resolução de exportação (ppp)</label><select id="dDpi"></select>
+    <p class="hint">A seguir escolhes a pasta e o nome do ficheiro. Mais opções (qualidade, PDF) no separador Exportar.</p>
+    <div class="row dlg-btns"><button id="dGo" value="ok" class="primary">Escolher pasta e exportar…</button><button value="cancel" formnovalidate>Cancelar</button></div>
+  </form>
+</dialog>
 <div id="busy" class="hidden"><div class="box"><div class="spin"></div><div id="busyMsg">A trabalhar…</div></div></div>
 </body>
 </html>

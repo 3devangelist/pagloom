@@ -1,5 +1,6 @@
 // Pagloom — interface (corre no WebView2 do Windows)
 import * as pdfjsLib from './lib/pdf.min.mjs';
+import * as Photo from './photo.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = './lib/pdf.worker.min.mjs';
 const { PDFDocument, degrees } = window.PDFLib;
 
@@ -39,6 +40,106 @@ function canvas(w, h) {
 function ctx2d(c, opts) { const x = c.getContext('2d', opts); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high'; return x; }
 const toBlob = (c, type = 'image/png', q) => new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('Falha a codificar a imagem (demasiado grande?)'))), type, q));
 
+// Bibliotecas grandes, carregadas só quando são precisas
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error('Não foi possível carregar ' + src));
+    document.head.appendChild(s);
+  });
+}
+// Fotos → página em vários núcleos: cada Web Worker (photo-worker.js) tem o seu OpenCV e trata uma foto de cada vez.
+// Quantos ao mesmo tempo: núcleos e memória livre reais do PC (vêm do programa em Go, /api/info) e tamanho das fotos.
+// Cada worker precisa de ~0,6 GB para uma foto de 12 MP (proporcional aos megapíxeis); fica 25% da memória livre
+// de reserva. "Núcleos a usar" (separador Página) sobrepõe-se ao automático. Se um worker ficar sem memória,
+// o limite (cap) desce e a foto é repetida.
+const PER_WORKER_12MP = 0.6e9;
+const sys = { cpus: navigator.hardwareConcurrency || 2, memAvail: (navigator.deviceMemory || 4) * 0.5e9, memTotal: 0 };
+const pool = { workers: [], queue: [], seq: 0, size: 1, cap: 8 };
+function autoWorkers(mpx = 12) {
+  const byCpu = Math.max(1, Math.min(8, sys.cpus - 1));
+  const byMem = Math.max(1, Math.floor((sys.memAvail * 0.75) / (PER_WORKER_12MP * Math.max(1, mpx / 12))));
+  return Math.min(byCpu, byMem);
+}
+function workersFor(mpx = 12) {
+  return Math.max(1, Math.min(+$('photoCores').value || autoWorkers(mpx), pool.cap));
+}
+async function refreshSys() { // a memória livre muda: lê-se de novo antes de cada lote
+  try {
+    const i = await api('info');
+    if (i.cpus) sys.cpus = i.cpus;
+    if (i.memAvail) { sys.memAvail = i.memAvail; sys.memTotal = i.memTotal; }
+  } catch (e) { /* fica a estimativa do browser */ }
+  updateCoresHint();
+}
+function updateCoresHint() {
+  const el = $('coresHint');
+  if (!el) return;
+  const gb = (b) => (b / 1e9).toFixed(1).replace('.', ',');
+  el.textContent = `Este PC: ${sys.cpus} núcleos` + (sys.memTotal ? `, ${gb(sys.memAvail)} GB livres de ${gb(sys.memTotal)} GB` : '') +
+    ` → automático: até ${autoWorkers()} foto(s) de 12 MP em paralelo` + (pool.cap < 8 ? ` (limitado a ${pool.cap} por falta de memória)` : '') + '.';
+}
+// build() prepara a mensagem só quando há um worker livre (os pixels não ficam todos em memória ao mesmo tempo)
+// e devolve { msg, transfer }; é chamado outra vez se a foto tiver de ser repetida.
+function poolRun(build, retries = 2) {
+  return new Promise((resolve, reject) => { pool.queue.push({ build, retries, resolve, reject }); poolNext(); });
+}
+function poolNext() {
+  // se o número desceu, os workers a mais fecham quando ficarem livres
+  while (pool.workers.length > pool.size) {
+    const i = pool.workers.findIndex((x) => !x.busy);
+    if (i < 0) break;
+    pool.workers[i].wk.terminate(); pool.workers.splice(i, 1);
+  }
+  while (pool.queue.length) {
+    let w = pool.workers.find((x) => !x.busy);
+    if (!w && pool.workers.length < pool.size) { w = { busy: false, wk: new Worker('photo-worker.js') }; pool.workers.push(w); }
+    if (!w) return;
+    w.busy = true;
+    poolDispatch(w, pool.queue.shift());
+  }
+}
+async function poolDispatch(w, job) {
+  const fail = (err) => {
+    const oom = err.crash || /memory|enlarge|abort|alloc|out of|oom/i.test(err.message || '');
+    if (oom) { // sem memória: fecha este worker, baixa o limite e repete a foto
+      w.wk.terminate(); pool.workers.splice(pool.workers.indexOf(w), 1);
+      pool.cap = Math.max(1, Math.min(pool.cap, pool.workers.length));
+      pool.size = Math.min(pool.size, pool.cap);
+      updateCoresHint();
+    } else w.busy = false;
+    if (oom && job.retries > 0) { job.retries--; pool.queue.unshift(job); } else job.reject(err);
+    poolNext();
+  };
+  let m;
+  try { m = await job.build(); } catch (e) { w.busy = false; job.reject(e); poolNext(); return; }
+  w.wk.onmessage = (e) => {
+    if (e.data.error) { fail(new Error(e.data.error)); return; }
+    w.busy = false; job.resolve(e.data); poolNext();
+  };
+  w.wk.onerror = (e) => { e.preventDefault(); const er = new Error(e.message || 'falha no processamento da foto'); er.crash = true; fail(er); };
+  w.wk.postMessage(Object.assign({ id: ++pool.seq }, m.msg), m.transfer);
+}
+// Pixels de um canvas, prontos a mandar para um worker (o buffer é transferido, não copiado)
+function pixelsOf(c) {
+  const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height);
+  return { img: { data: d.data, width: d.width, height: d.height }, transfer: [d.data.buffer] };
+}
+function canvasFrom(data, w, h, dpi) {
+  const o = canvas(w, h);
+  o.getContext('2d').putImageData(new ImageData(data, w, h), 0, 0);
+  o.dpi = dpi;
+  return o;
+}
+let heifReady = null;
+function loadHeif() {
+  if (!heifReady) {
+    heifReady = loadScript('lib/libheif-bundle.js').then(() => ({ lh: window.libheif() }));
+    heifReady.catch(() => { heifReady = null; });
+  }
+  return heifReady;
+}
+
 // ───────────────────────── estado ─────────────────────────
 const S = {
   pages: [],          // páginas (objetos imutáveis: uma edição cria um objeto novo)
@@ -66,6 +167,7 @@ function pushUndo() {
 }
 function restore(snap) {
   S.pages = snap.pages; S.cur = clamp(snap.cur, -1, S.pages.length - 1);
+  S.dirty = true;
   S.sel = new Set(S.cur >= 0 ? [S.pages[S.cur].id] : []);
   resetToolState(); refresh();
 }
@@ -100,7 +202,62 @@ function readDpi(bytes) {
   }
   return 0;
 }
-const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+// JPEG: orientação EXIF e tamanho gravado no ficheiro (antes de rodar)
+function jpegInfo(b) {
+  const r = { orient: 1, w: 0, h: 0 };
+  if (b[0] !== 0xFF || b[1] !== 0xD8) return r;
+  try {
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    let p = 2;
+    while (p + 9 < b.length && b[p] === 0xFF) {
+      const m = b[p + 1], len = dv.getUint16(p + 2);
+      if (m === 0xE1 && dv.getUint32(p + 4) === 0x45786966) { // "Exif"
+        const t = p + 10, le = dv.getUint16(t) === 0x4949, ifd = dv.getUint32(t + 4, le), n = dv.getUint16(t + ifd, le);
+        for (let i = 0; i < n; i++) { const e = t + ifd + 2 + i * 12; if (dv.getUint16(e, le) === 0x0112) r.orient = dv.getUint16(e + 8, le); }
+      }
+      if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) { r.h = dv.getUint16(p + 5); r.w = dv.getUint16(p + 7); break; }
+      if (m === 0xDA) break;
+      p += 2 + len;
+    }
+  } catch (e) { /* EXIF estragado: fica como está */ }
+  return r;
+}
+// Aplica a orientação EXIF à mão (só quando o motor do browser não a aplica)
+function orientCanvas(src, o) {
+  const w = src.width, h = src.height, c = canvas(o >= 5 ? h : w, o >= 5 ? w : h), x = ctx2d(c);
+  const T = { 2: [-1, 0, 0, 1, w, 0], 3: [-1, 0, 0, -1, w, h], 4: [1, 0, 0, -1, 0, h], 5: [0, 1, 1, 0, 0, 0], 6: [0, 1, -1, 0, h, 0], 7: [0, -1, -1, 0, h, w], 8: [0, -1, 1, 0, 0, w] }[o];
+  if (T) x.transform(...T);
+  x.drawImage(src, 0, 0);
+  return c;
+}
+let exifManual = false; // passa a true se o browser ignorar a orientação EXIF
+async function fixOrientation(blob, info) {
+  if (info.orient < 2 || info.orient > 8) return blob;
+  if (!exifManual && info.orient >= 5 && info.w && info.w !== info.h) {
+    const bmp = await createImageBitmap(blob);
+    exifManual = bmp.width === info.w; bmp.close();
+  }
+  if (!exifManual) return blob;
+  const bmp = await createImageBitmap(blob, { imageOrientation: 'none' });
+  const c = orientCanvas(bmp, info.orient); bmp.close();
+  const out = await toBlob(c, 'image/jpeg', 0.95); c.width = c.height = 0;
+  return out;
+}
+// HEIC/HEIF (fotos do iPhone) → JPEG
+async function heicToJpeg(bytes) {
+  const { lh } = await loadHeif();
+  const imgs = new lh.HeifDecoder().decode(bytes);
+  if (!imgs || !imgs.length) throw new Error('o ficheiro HEIC não tem imagens');
+  const im = imgs.find((i) => i.is_primary()) || imgs[0], w = im.get_width(), h = im.get_height();
+  const c = canvas(w, h), x = ctx2d(c), id = x.createImageData(w, h);
+  try {
+    await new Promise((res, rej) => im.display(id, (d) => (d ? res() : rej(new Error('falha a descodificar o HEIC')))));
+  } finally { imgs.forEach((i) => i.free()); }
+  x.putImageData(id, 0, 0);
+  const blob = await toBlob(c, 'image/jpeg', 0.95); c.width = c.height = 0;
+  return blob;
+}
+const CRC =(() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
 function crc32(b, s, e) { let c = 0xFFFFFFFF; for (let i = s; i < e; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
 function setPngDpi(bytes, dpi) {
   const ppm = Math.round(dpi / 0.0254);
@@ -288,22 +445,46 @@ function insertPages(newPages, replaceIdx) {
 }
 
 async function addFiles(files) {
-  files = [...files].filter((f) => /\.(pdf|png|jpe?g|webp|gif|bmp)$/i.test(f.name) || /pdf|image/.test(f.type));
-  if (!files.length) { status('Formato não suportado. Usa PDF, PNG, JPEG, WEBP, GIF ou BMP.', 'err'); return; }
+  const isHeic = (f) => /\.(heic|heif)$/i.test(f.name) || /heic|heif/.test(f.type);
+  files = [...files].filter((f) => /\.(pdf|png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(f.name) || /pdf|image/.test(f.type));
+  if (!files.length) { status('Formato não suportado. Usa PDF, PNG, JPEG, HEIC, WEBP, GIF ou BMP.', 'err'); return; }
   busy('A abrir ficheiros…');
-  const added = [];
+  const added = [], photoIdx = [];
+  let photos = 0, straight = 0;
   try {
     for (const f of files) {
       busyMsg('A abrir ' + f.name + '…');
-      if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') added.push(...(await loadPdfFile(f)));
+      if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') { added.push(...(await loadPdfFile(f))); continue; }
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      let blob, dpi = readDpi(bytes), photo = false;
+      if (isHeic(f)) { busyMsg('A converter ' + f.name + ' (HEIC)…'); blob = await heicToJpeg(bytes); dpi = 0; photo = true; }
       else {
-        const bytes = new Uint8Array(await f.arrayBuffer());
-        const p = await imgPageFromBlob(new Blob([bytes], { type: f.type || 'image/png' }), readDpi(bytes));
-        p.name = f.name; added.push(p);
+        blob = new Blob([bytes], { type: f.type || 'image/png' });
+        const info = jpegInfo(bytes);
+        if (info.w) { // JPEG
+          blob = await fixOrientation(blob, info);
+          if (dpi <= 72) { dpi = 0; photo = true; } // fotos de telefone: 72 ppp ou nada
+        }
       }
+      const p = await imgPageFromBlob(blob, dpi);
+      p.name = f.name;
+      if (photo) { photos++; photoIdx.push(added.length); }
+      added.push(p);
+    }
+    if (photoIdx.length && $('photoAuto').checked) { // várias fotos ao mesmo tempo, uma por núcleo
+      let done = 0;
+      const cores = await setPoolFor(photoIdx.map((k) => added[k]));
+      busyMsg(`A endireitar ${photoIdx.length} foto(s), ${cores} em paralelo…`);
+      await Promise.all(photoIdx.map(async (k) => {
+        try { const n = await autoPhoto(added[k]); if (n) { added[k] = n; straight++; } } catch (e) { /* fica como estava */ }
+        busyMsg(`A endireitar fotos: ${++done} de ${photoIdx.length} (${pool.size} em paralelo)…`);
+      }));
     }
     insertPages(added);
-    status(`${added.length} página(s) adicionada(s).`, 'ok');
+    let msg = `${added.length} página(s) adicionada(s).`;
+    if (photos && $('photoAuto').checked) msg += ` Fotos endireitadas: ${straight} de ${photos}` + (straight < photos ? ' (as restantes ficaram como estavam, por falta de confiança na deteção: usa “Foto → página”, tecla P).' : '.');
+    else if (photos) msg += ' Para endireitar uma foto e pô-la no tamanho real, usa “Foto → página” (tecla P).';
+    status(msg, 'ok');
   } catch (e) {
     if (added.length) insertPages(added);
     status('Erro a abrir: ' + e.message, 'err');
@@ -370,7 +551,8 @@ async function doScan({ ui = false, replace = false } = {}) {
 async function pageCanvas(p) { // canvas em resolução total (página imagem)
   const bmp = await createImageBitmap(p.blob);
   const c = canvas(bmp.width, bmp.height);
-  ctx2d(c).drawImage(bmp, 0, 0); bmp.close();
+  // em memória normal, não na GPU: os pixels vão ser lidos (níveis, workers) e assim não há cópia de volta da placa
+  ctx2d(c, { willReadFrequently: true }).drawImage(bmp, 0, 0); bmp.close();
   return c;
 }
 function rotateCanvas(src, deg) {
@@ -466,7 +648,7 @@ async function editPages(idxs, label, fn, opts = {}) {
       const c = await pageCanvas(p);
       const out = await fn(c, p);
       if (!out) { results.push(null); continue; }
-      results.push(await imgPageFromCanvas(out, p.dpi, p));
+      results.push(await imgPageFromCanvas(out, out.dpi || p.dpi, p)); // out.dpi: a operação muda a resolução
       if (out !== c) out.width = out.height = 0;
       c.width = c.height = 0;
       await nextFrame();
@@ -524,6 +706,129 @@ async function pickLevel(bx, by, kind) {
 }
 function autoLevels() {
   editPages(selIdx(), 'Níveis automáticos', (c) => { const l = autoLevelsFor(c); return levelsCanvas(c, l.white, l.black); });
+}
+
+// ───────────────────────── foto → página ─────────────────────────
+// S.photo = { id, busy } enquanto deteta; depois { id, det, mesh, W, H, edited }
+const FMT_NAMES = { a3: 'A3', a4: 'A4', a5: 'A5', a6: 'A6', letter: 'Carta', legal: 'Ofício' };
+const photoFmtArgs = () => [$('photoFmt').value, [+$('photoW').value || 210, +$('photoH').value || 297]];
+// Formato, tamanho em mm, píxeis e ppp da página corrigida
+function photoPlan(ph) { return Photo.planPage(ph.mesh, ph.W, ph.H, ...photoFmtArgs()); }
+function photoInfoText(ph) {
+  const pl = photoPlan(ph);
+  const label = $('photoFmt').value === 'custom' ? 'medida própria'
+    : pl.assumed ? 'proporção medida, largura assumida de 210 mm — escolhe o formato'
+      : FMT_NAMES[pl.key] + (pl.auto ? ' (automático)' : '');
+  return `${pl.mm[0].toFixed(0)} × ${pl.mm[1].toFixed(0)} mm (${label}) · ${pl.sz.w} × ${pl.sz.h} px · ${Math.round(pl.dpi)} ppp`;
+}
+
+async function startPhoto() {
+  const p = curPage();
+  if (!p || p.kind !== 'img') return;
+  const id = p.id;
+  S.photo = { id, busy: true };
+  busy('A procurar a folha (resolução total)…');
+  try {
+    const W = p.w, H = p.h;
+    pool.size = Math.max(pool.size, 1);
+    const { det } = await poolRun(async () => {
+      const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
+      return { msg: { op: 'detect', img: px.img }, transfer: px.transfer };
+    });
+    if (S.tool !== 'photo' || !curPage() || curPage().id !== id) return;
+    S.photo = { id, det, mesh: Photo.buildMesh(det, +$('photoN').value), W, H, edited: false };
+    const q = det.quality, why = q.why.length ? ': ' + q.why.join('; ') : '';
+    status(q.level === 'alta' ? 'Folha encontrada (confiança alta). Enter para aplicar.'
+      : q.level === 'média' ? `Confiança média${why}. Confirma os pontos e carrega em Enter.`
+        : `Confiança baixa${why}. Ajusta os cantos à mão.`, q.level === 'baixa' ? 'err' : 'ok');
+  } catch (e) {
+    S.photo = null; setTool('pan');
+    status('Foto → página: ' + e.message, 'err');
+  } finally { idle(); updateToolPanel(); draw(); }
+}
+// Muda o número de pontos: sem edições, refaz a partir da deteção; com edições, reamostra a grelha atual
+function regridPhoto(N) {
+  const ph = S.photo;
+  if (!ph || !ph.mesh || ph.mesh.N === N) return;
+  if (!ph.edited) { ph.mesh = Photo.buildMesh(ph.det, N); return; }
+  const map = Photo.meshMapper(ph.mesh), m = { N, corners: ph.mesh.corners.map((c) => c.slice()), res: new Float64Array(N * N * 2) };
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const q = map(i / (N - 1), j / (N - 1)); Photo.moveNode(m, i, j, q[0], q[1]); }
+  ph.mesh = m;
+}
+async function applyPhoto() {
+  const ph = S.photo, p = curPage();
+  if (!ph || !ph.mesh || !p || ph.id !== p.id) return;
+  const { sz, dpi } = photoPlan(ph), mesh = ph.mesh;
+  setTool('pan');
+  await editPages([S.cur], 'Foto → página', async (c) => {
+    const { data } = await poolRun(() => { const px = pixelsOf(c); return { msg: { op: 'warp', img: px.img, mesh, w: sz.w, h: sz.h }, transfer: px.transfer }; });
+    return canvasFrom(data, sz.w, sz.h, dpi);
+  });
+}
+// Ao adicionar fotos com "endireitar logo" (num worker): devolve a página corrigida, ou null se não encontrar a folha
+// Lote: Foto → página num intervalo de páginas (imagens), várias ao mesmo tempo, uma por núcleo.
+// As de confiança baixa ficam como estavam. Desfaz-se tudo de uma vez com Ctrl+Z.
+function runBatch() {
+  const n = S.pages.length, a = clamp(Math.round(+$('btFrom').value) || 1, 1, n), b = clamp(Math.round(+$('btTo').value) || n, 1, n);
+  const idxs = [];
+  for (let i = Math.min(a, b) - 1; i < Math.max(a, b); i++) idxs.push(i);
+  batchPhoto(idxs);
+}
+async function batchPhoto(range) {
+  const idxs = range.filter((i) => S.pages[i].kind === 'img');
+  if (!idxs.length) { status('Nesse intervalo não há páginas de imagem (as páginas PDF já estão direitas).', 'err'); return; }
+  setTool('pan');
+  const results = new Map();
+  let done = 0, failed = 0;
+  busy('Foto → página: a preparar…');
+  try {
+    const cores = await setPoolFor(idxs.map((i) => S.pages[i]));
+    busyMsg(`Foto → página: 0 de ${idxs.length} (${cores} em paralelo)…`);
+    await Promise.all(idxs.map(async (i) => {
+      try { const n = await autoPhoto(S.pages[i]); if (n) results.set(i, n); } catch (e) { failed++; }
+      busyMsg(`Foto → página: ${++done} de ${idxs.length} (${pool.size} em paralelo)…`);
+    }));
+    if (results.size) {
+      pushUndo();
+      for (const [i, n] of results) S.pages[i] = n;
+      S.sel = new Set(idxs.map((i) => S.pages[i].id));
+      refresh();
+    }
+    const left = idxs.length - results.size;
+    status(`Foto → página: ${results.size} de ${idxs.length} página(s) endireitada(s).` +
+      (left ? ` ${left} ficaram como estavam (confiança baixa${failed ? ' ou erro' : ''}): usa P nessas.` : ''), results.size ? 'ok' : 'err');
+  } finally { idle(); }
+}
+// Ajusta o número de workers à memória livre e à maior foto do lote; devolve esse número
+async function setPoolFor(pages) {
+  await refreshSys();
+  const mpx = Math.max(12, ...pages.map((p) => (p.w * p.h) / 1e6));
+  pool.size = Math.min(workersFor(mpx), pages.length);
+  poolNext();
+  return pool.size;
+}
+async function autoPhoto(p) {
+  const [fmt, custom] = photoFmtArgs(), N = +$('photoN').value;
+  const r = await poolRun(async () => {
+    const c = await pageCanvas(p), px = pixelsOf(c); c.width = c.height = 0;
+    return { msg: { op: 'auto', img: px.img, N, fmt, custom }, transfer: px.transfer };
+  });
+  if (!r.found) return null;
+  const o = canvasFrom(r.data, r.plan.sz.w, r.plan.sz.h, r.plan.dpi);
+  const n = await imgPageFromCanvas(o, r.plan.dpi, p);
+  o.width = o.height = 0;
+  return n;
+}
+function photoNodeAt(sx, sy) { // ponto da grelha perto do rato (coordenadas do ecrã)
+  const ph = S.photo, v = S.vt;
+  if (!ph || !ph.mesh || !v) return null;
+  const N = ph.mesh.N;
+  let best = null;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const q = Photo.meshNode(ph.mesh, i, j), d = Math.hypot(v.ox + q[0] * v.s - sx, v.oy + q[1] * v.s - sy);
+    if (d < 12 && (!best || d < best.d)) best = { i, j, d };
+  }
+  return best;
 }
 
 // ───────────────────────── páginas: navegar / apagar / mover ─────────────────────────
@@ -658,7 +963,7 @@ function draw() {
     }
     x.restore();
     if (!s.prev) {
-      S.vt = { ox, oy, s: sc, w: d.w, h: d.h, slot: s };
+      S.vt = { ox, oy, s: sc, w: d.w, h: d.h, slot: s, bmp: d.bmp };
       drawOverlay(x, s);
     }
   }
@@ -689,12 +994,62 @@ function drawOverlay(x, slot) {
     }
     x.restore();
   }
+  if (S.tool === 'photo' && S.photo && S.photo.mesh) drawPhotoGrid(x, slot);
   if (S.tool === 'line' && S.line) {
     const l = S.line;
     x.save(); x.strokeStyle = '#ffcc33'; x.lineWidth = 2; x.setLineDash([6, 4]);
     x.beginPath(); x.moveTo(v.ox + l.x0 * v.s, v.oy + l.y0 * v.s); x.lineTo(v.ox + l.x1 * v.s, v.oy + l.y1 * v.s); x.stroke();
     x.restore();
   }
+}
+function drawPhotoGrid(x, slot) {
+  const v = S.vt, m = S.photo.mesh, N = m.N, map = Photo.meshMapper(m);
+  const sc = (q) => [v.ox + q[0] * v.s, v.oy + q[1] * v.s];
+  const K = 48, line = (f) => { const q0 = sc(f(0)); x.moveTo(q0[0], q0[1]); for (let k = 1; k <= K; k++) { const q = sc(f(k / K)); x.lineTo(q[0], q[1]); } };
+  x.save(); x.beginPath(); x.rect(slot.x, slot.y, slot.w, slot.h); x.clip();
+  // escurece o que fica fora da folha
+  x.beginPath(); x.rect(slot.x, slot.y, slot.w, slot.h);
+  const outline = [];
+  for (let k = 0; k < K; k++) outline.push(map(k / K, 0));
+  for (let k = 0; k < K; k++) outline.push(map(1, k / K));
+  for (let k = K; k > 0; k--) outline.push(map(k / K, 1));
+  for (let k = K; k > 0; k--) outline.push(map(0, k / K));
+  outline.forEach((q, k) => { const s = sc(q); if (k) x.lineTo(s[0], s[1]); else x.moveTo(s[0], s[1]); });
+  x.closePath(); x.fillStyle = 'rgba(0,0,0,.5)'; x.fill('evenodd');
+  // linhas da grelha
+  x.beginPath();
+  for (let i = 1; i < N - 1; i++) { line((t) => map(i / (N - 1), t)); line((t) => map(t, i / (N - 1))); }
+  x.strokeStyle = 'rgba(91,147,245,.75)'; x.lineWidth = 1; x.stroke();
+  x.beginPath(); line((t) => map(t, 0)); line((t) => map(1, t)); line((t) => map(t, 1)); line((t) => map(0, t));
+  x.strokeStyle = '#5b93f5'; x.lineWidth = 2; x.stroke();
+  // análise: onde as linhas de texto foram medidas (verde)
+  const ct = S.photo.det && S.photo.det.content;
+  if (S.photoShow && ct && ct.samples) {
+    const h = Photo.homography(S.photo.det.corners);
+    x.fillStyle = ct.apply ? 'rgba(60,220,90,.9)' : 'rgba(255,200,60,.9)';
+    for (const [u, vv] of ct.samples) { const s = sc(Photo.applyH(h, u, vv)); x.fillRect(s[0] - 2, s[1] - 2, 4, 4); }
+  }
+  // pontos
+  const act = drag && drag.kind === 'node' ? drag : null;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const s = sc(Photo.meshNode(m, i, j)), corner = (i === 0 || i === N - 1) && (j === 0 || j === N - 1);
+    x.beginPath(); x.arc(s[0], s[1], corner ? 7 : 5, 0, Math.PI * 2);
+    x.fillStyle = act && act.i === i && act.j === j ? '#ffcc33' : '#fff'; x.fill();
+    x.strokeStyle = '#2f6fe0'; x.lineWidth = 2; x.stroke();
+  }
+  // lupa enquanto se arrasta um ponto
+  if (act && v.bmp) {
+    const q = Photo.meshNode(m, act.i, act.j), R = 70, Z = 4, cx = slot.x + 16 + R, cy = slot.y + 16 + R;
+    x.save(); x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.clip();
+    x.fillStyle = '#000'; x.fillRect(cx - R, cy - R, 2 * R, 2 * R);
+    const src = R / (v.s * Z); // meia largura da zona da foto mostrada (px da foto)
+    x.drawImage(v.bmp, q[0] - src, q[1] - src, 2 * src, 2 * src, cx - R, cy - R, 2 * R, 2 * R);
+    x.strokeStyle = '#ffcc33'; x.lineWidth = 1;
+    x.beginPath(); x.moveTo(cx - R, cy); x.lineTo(cx + R, cy); x.moveTo(cx, cy - R); x.lineTo(cx, cy + R); x.stroke();
+    x.restore();
+    x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.strokeStyle = '#5b93f5'; x.lineWidth = 2; x.stroke();
+  }
+  x.restore();
 }
 function handlePts(x, y, w, h) {
   return [[x, y], [x + w / 2, y], [x + w, y], [x + w, y + h / 2], [x + w, y + h], [x + w / 2, y + h], [x, y + h], [x, y + h / 2]];
@@ -714,7 +1069,11 @@ view.addEventListener('mousedown', (e) => {
     return;
   }
   const v = S.vt;
-  if (e.button === 1 || S.tool === 'pan') { drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, px: S.panX, py: S.panY }; view.style.cursor = 'grabbing'; return; }
+  if (e.button === 0 && S.tool === 'photo') {
+    const n = photoNodeAt(b.sx, b.sy);
+    if (n) { drag = { kind: 'node', i: n.i, j: n.j }; draw(); return; }
+  }
+  if (e.button === 1 || S.tool === 'pan' || S.tool === 'photo') { drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, px: S.panX, py: S.panY }; view.style.cursor = 'grabbing'; return; }
   if (e.button !== 0) return;
   if (S.tool === 'crop') {
     const r = S.crop;
@@ -750,6 +1109,10 @@ window.addEventListener('mousemove', (e) => {
     if (drag.h.includes('n')) y = Math.min(by, y1 - 2);
     if (drag.h.includes('s')) y1 = Math.max(by, y + 2);
     S.crop = { x, y, w: x1 - x, h: y1 - y };
+  } else if (drag.kind === 'node') {
+    if (!S.photo || !S.photo.mesh) return;
+    Photo.moveNode(S.photo.mesh, drag.i, drag.j, clamp(b.x, 0, v.w), clamp(b.y, 0, v.h));
+    S.photo.edited = true;
   } else if (drag.kind === 'line') {
     S.line.x1 = b.x; S.line.y1 = b.y;
   } else if (drag.kind === 'angle') {
@@ -760,6 +1123,7 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', () => {
   if (!drag) return;
   const k = drag.kind; drag = null; view.style.cursor = '';
+  if (k === 'node') { draw(); if ($('phInfo') && S.photo && S.photo.mesh) $('phInfo').textContent = photoInfoText(S.photo); return; }
   if (k === 'line' && S.line) {
     const l = S.line, dx = l.x1 - l.x0, dy = l.y1 - l.y0;
     if (Math.hypot(dx, dy) * (S.vt ? S.vt.s : 1) < 20) { S.line = null; draw(); return; }
@@ -778,6 +1142,7 @@ function updateCursor(e) {
     if (S.tool === 'pan') c = 'grab';
     else if (S.tool === 'crop' || S.tool === 'line' || S.tool === 'white' || S.tool === 'black') c = 'crosshair';
     else if (S.tool === 'angle') c = 'ew-resize';
+    else if (S.tool === 'photo') c = photoNodeAt(b.sx, b.sy) ? 'move' : 'grab';
     if (S.tool === 'crop' && S.crop && S.vt) {
       const v = S.vt, r = S.crop;
       const pts = handlePts(v.ox + r.x * v.s, v.oy + r.y * v.s, r.w * v.s, r.h * v.s);
@@ -811,7 +1176,7 @@ function zoomBy(f) { S.zoomF = clamp(S.zoomF * f, 0.2, 20); draw(); }
 function fit() { S.zoomF = 1; S.panX = S.panY = 0; draw(); }
 
 // ───────────────────────── ferramentas ─────────────────────────
-function resetToolState() { S.crop = null; S.line = null; S.angle = 0; updateToolPanel(); }
+function resetToolState() { S.crop = null; S.line = null; S.angle = 0; S.photo = null; updateToolPanel(); }
 function setTool(t) {
   S.tool = t; resetToolState();
   document.querySelectorAll('.tool').forEach((b) => b.classList.toggle('on', b.dataset.tool === t));
@@ -840,7 +1205,7 @@ function updateToolPanel() {
     tp.innerHTML = '<span class="msg">Ângulo</span><button id="angM">−0,1°</button>' +
       '<input type="range" id="angR" min="-45" max="45" step="0.1" value="0"><button id="angP">+0,1°</button>' +
       '<input type="number" id="angN" min="-45" max="45" step="0.1" value="0"><span class="msg">°</span>' +
-      '<button id="angOk" class="primary">Aplicar (Enter)</button><button id="ang0">Repor</button>' +
+      '<button id="angOk" class="primary">Aplicar (Enter)</button><button id="ang0">Repor</button><button id="tNo">Cancelar (Esc)</button>' +
       '<span class="msg">Podes também arrastar na página para os lados.</span>';
     $('angR').oninput = (e) => setAngle(+e.target.value);
     $('angN').oninput = (e) => setAngle(+e.target.value);
@@ -849,14 +1214,55 @@ function updateToolPanel() {
     $('ang0').onclick = () => setAngle(0);
     $('angOk').onclick = () => rotateAngle(S.angle);
   } else if (t === 'line') {
-    tp.innerHTML = '<span class="msg">Desenha uma linha ao longo de uma linha de texto, de uma margem ou de uma aresta da folha. Ao largar, a página fica direita.</span>';
+    tp.innerHTML = '<span class="msg">Desenha uma linha ao longo de uma linha de texto, de uma margem ou de uma aresta da folha. Ao largar, a página fica direita.</span><button id="tNo">Fechar (Esc)</button>';
   } else if (t === 'white') {
-    tp.innerHTML = '<span class="msg">Clica numa zona do papel que devia ser branca. As cores são corrigidas a partir desse ponto.</span><button id="lvAuto">Auto níveis</button>';
+    tp.innerHTML = '<span class="msg">Clica numa zona do papel que devia ser branca. As cores são corrigidas a partir desse ponto.</span><button id="lvAuto">Auto níveis</button><button id="tNo">Fechar (Esc)</button>';
     $('lvAuto').onclick = autoLevels;
   } else if (t === 'black') {
-    tp.innerHTML = '<span class="msg">Clica numa zona que devia ser preta (texto ou tinta mais escura).</span>';
+    tp.innerHTML = '<span class="msg">Clica numa zona que devia ser preta (texto ou tinta mais escura).</span><button id="tNo">Fechar (Esc)</button>';
+  } else if (t === 'batch') {
+    const n = S.pages.length, sel = selIdx();
+    const a = sel.length > 1 ? Math.min(...sel) + 1 : 1, b = sel.length > 1 ? Math.max(...sel) + 1 : n;
+    tp.innerHTML = '<span class="msg">Foto → página em lote: da página</span>' +
+      `<input type="number" id="btFrom" min="1" max="${n}" value="${a}"><span class="msg">à página</span>` +
+      `<input type="number" id="btTo" min="1" max="${n}" value="${b}"><span class="msg">de ${n}</span>` +
+      '<button id="btGo" class="primary">Processar (Enter)</button><button id="tNo">Cancelar (Esc)</button>' +
+      '<span class="msg">Várias ao mesmo tempo; as de confiança baixa ficam como estão.</span>';
+    $('btGo').onclick = runBatch;
+  } else if (t === 'photo') {
+    if (p.kind !== 'img') { tp.innerHTML = '<span class="msg">Foto → página serve para fotos e imagens. As páginas PDF já estão direitas.</span>'; return; }
+    const ph = S.photo;
+    if (!ph || ph.id !== p.id) { if (!ph || !ph.busy) startPhoto(); tp.innerHTML = '<span class="msg">A procurar a folha…</span>'; return; }
+    if (ph.busy) { tp.innerHTML = '<span class="msg">A procurar a folha…</span>'; return; }
+    const custom = $('photoFmt').value === 'custom';
+    tp.innerHTML = '<span class="msg">Arrasta os pontos para as bordas da folha (Ctrl+roda para aproximar).</span>' +
+      `<span class="msg">Grelha</span><select id="phN">${$('photoN').innerHTML}</select>` +
+      `<span class="msg">Formato</span><select id="phF">${$('photoFmt').innerHTML}</select>` +
+      (custom ? `<input type="number" id="phW" min="10" max="2000" step="0.5" value="${$('photoW').value}"><span class="msg">×</span><input type="number" id="phH" min="10" max="2000" step="0.5" value="${$('photoH').value}"><span class="msg">mm</span>` : '') +
+      `<span class="msg" id="phInfo">${photoInfoText(ph)}</span>` +
+      `<span class="msg">· confiança ${ph.det.quality.level}${photoContentText(ph.det.content)}</span>` +
+      `<label class="msg"><input type="checkbox" id="phShow"${S.photoShow ? ' checked' : ''}> mostrar análise</label>` +
+      '<button id="phOk" class="primary">Aplicar (Enter)</button><button id="phRe">Detetar de novo</button><button id="phNo">Cancelar (Esc)</button>';
+    $('phN').value = String(ph.mesh.N); $('phF').value = $('photoFmt').value;
+    $('phN').onchange = (e) => { $('photoN').value = e.target.value; saveSettings(); regridPhoto(+e.target.value); updateToolPanel(); draw(); };
+    $('phF').onchange = (e) => { $('photoFmt').value = e.target.value; updatePhotoCustom(); saveSettings(); updateToolPanel(); };
+    if (custom) for (const [a, b] of [['phW', 'photoW'], ['phH', 'photoH']]) $(a).oninput = (e) => { $(b).value = e.target.value; saveSettings(); $('phInfo').textContent = photoInfoText(ph); };
+    $('phShow').onchange = (e) => { S.photoShow = e.target.checked; draw(); };
+    $('phOk').onclick = applyPhoto;
+    $('phRe').onclick = () => { S.photo = null; updateToolPanel(); };
+    $('phNo').onclick = () => setTool('pan');
   }
 }
+document.addEventListener('click', (e) => { if (e.target.id === 'tNo') setTool('pan'); }); // botões Cancelar / Fechar das ferramentas
+function photoContentText(ct) {
+  if (!ct || ct.coverage < 0.4) return ' · pouco texto: só perspetiva';
+  const what = ['', 'inclinação', 'curvatura', 'curvatura'];
+  const parts = [];
+  if (ct.v.apply) parts.push(`linhas: ${what[ct.v.model]}, ${ct.v.rms0.toFixed(1)} → ${ct.v.rms.toFixed(1)} mm`);
+  if (ct.u.apply) parts.push(`verticais: ${what[ct.u.model]}, ${ct.u.rms0.toFixed(1)} → ${ct.u.rms.toFixed(1)} mm`);
+  return parts.length ? ` · corrigido pelo conteúdo (${parts.join('; ')})` : ` · conteúdo já direito com a perspetiva (${ct.rms0.toFixed(1)} mm)`;
+}
+function updatePhotoCustom() { $('photoCustom').classList.toggle('hidden', $('photoFmt').value !== 'custom'); }
 
 // ───────────────────────── exportação ─────────────────────────
 function parseRange(s, n) {
@@ -1057,7 +1463,7 @@ async function doExport() {
         await nextFrame();
       }
     }
-    S.dirty = false;
+    S.dirty = false; syncUnsaved();
     const first = written[0];
     const esc = (t) => t.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     status(`${ch.note ? esc(ch.note) + ' ' : ''}Exportado: ${esc(written.length === 1 ? first : written.length + ' ficheiros em ' + ch.dir)} — <a id="lnkReveal">mostrar na pasta</a>`, 'ok', true);
@@ -1067,6 +1473,25 @@ async function doExport() {
     status('Erro ao exportar: ' + e.message, 'err');
   } finally { idle(); }
 }
+// Exportar (botão de cima / Ctrl+E): pergunta formato, páginas e resolução; depois vem o "Guardar como" (pasta e nome).
+// Os campos são os mesmos do separador Exportar (ficam sincronizados e guardados nas definições).
+const EXP_PAIRS = [['dFmt', 'fmt'], ['dScope', 'scope'], ['dRange', 'range'], ['dDpi', 'dpiOut']];
+function openExportDialog() {
+  if (!S.pages.length) { status('Não há páginas para exportar.', 'err'); return; }
+  const d = $('expDlg');
+  if (d.open) return;
+  for (const [a, b] of EXP_PAIRS) { if ($(b).tagName === 'SELECT') $(a).innerHTML = $(b).innerHTML; $(a).value = $(b).value; }
+  $('dRange').classList.toggle('hidden', $('dScope').value !== 'range');
+  d.showModal();
+}
+on('dScope', 'change', () => $('dRange').classList.toggle('hidden', $('dScope').value !== 'range'));
+on('expDlg', 'close', () => {
+  if ($('expDlg').returnValue !== 'ok') return;
+  for (const [a, b] of EXP_PAIRS) $(b).value = $(a).value;
+  $('range').classList.toggle('hidden', $('scope').value !== 'range');
+  saveSettings(); updateExportInfo();
+  doExport();
+});
 function updateExportInfo() {
   const fmt = $('fmt').value;
   $('pdfOpts').classList.toggle('hidden', fmt !== 'pdf');
@@ -1100,18 +1525,35 @@ function refresh(scroll = true) {
   const n = S.pages.length;
   $('counter').textContent = n ? `${S.cur + 1} / ${n}` : '— / —';
   $('bPrev').disabled = S.cur <= 0; $('bNext').disabled = S.cur >= n - 1;
-  for (const id of ['bExport', 'bExport2', 'bDel', 'bDup', 'bRotL', 'bRotR', 'bAuto', 'bRescan', 'bSelAll', 'bNew']) $(id).disabled = !n;
+  for (const id of ['bExport', 'bExport2', 'bDel', 'bDup', 'bRotL', 'bRotR', 'bAuto', 'bRescan', 'bSelAll', 'bNew', 'bPhotoBatch']) $(id).disabled = !n;
   $('bUndo').disabled = !S.undo.length; $('bRedo').disabled = !S.redo.length;
   $('bDual').classList.toggle('toggled', S.dual);
   renderThumbs(scroll);
   updateToolPanel(); updateExportInfo(); updatePageInfo();
   draw();
+  syncUnsaved();
 }
+
+// ───────────────────────── aviso ao fechar ─────────────────────────
+// Páginas por exportar: o browser (Linux) pergunta pelo beforeunload; no Windows quem pergunta
+// é o programa, ao fechar a janela, por isso o estado também é enviado ao servidor.
+const unsaved = () => S.dirty && S.pages.length > 0;
+let sentUnsaved = false;
+function syncUnsaved() {
+  const u = unsaved();
+  if (u === sentUnsaved) return;
+  sentUnsaved = u;
+  api('unsaved?v=' + (u ? 1 : 0), { method: 'POST' }).catch(() => { sentUnsaved = !u; });
+}
+window.addEventListener('beforeunload', (e) => {
+  if (!unsaved()) return;
+  e.preventDefault(); e.returnValue = '';
+});
 
 // ───────────────────────── definições ─────────────────────────
 let settings = {};
-const SET_FIELDS = ['src', 'mode', 'dpiIn', 'area', 'bright', 'contrast', 'fmt', 'scope', 'dpiOut', 'quality', 'rasterDpi'];
-const SET_CHECKS = ['keepVector', 'lossless'];
+const SET_FIELDS = ['src', 'mode', 'dpiIn', 'area', 'bright', 'contrast', 'fmt', 'scope', 'dpiOut', 'quality', 'rasterDpi', 'photoN', 'photoFmt', 'photoW', 'photoH', 'photoCores'];
+const SET_CHECKS = ['keepVector', 'lossless', 'photoAuto'];
 let saveT = 0;
 function saveSettings() {
   clearTimeout(saveT);
@@ -1127,6 +1569,7 @@ async function loadSettings() {
   SET_FIELDS.forEach((k) => { if (settings[k] != null) $(k).value = settings[k]; });
   SET_CHECKS.forEach((k) => { if (settings[k] != null) $(k).checked = !!settings[k]; });
   S.dual = !!settings.dual;
+  updatePhotoCustom();
   $('brV').textContent = $('bright').value; $('ctV').textContent = $('contrast').value; $('qV').textContent = $('quality').value;
 }
 
@@ -1142,13 +1585,14 @@ on('fileIn', 'change', (e) => { addFiles(e.target.files); e.target.value = ''; }
 on('bUndo', 'click', undo);
 on('bRedo', 'click', redo);
 on('bNew', 'click', newDoc);
-on('bExport', 'click', doExport);
+on('bExport', 'click', openExportDialog);
 on('bExport2', 'click', doExport);
 on('bPrev', 'click', () => go(S.cur - 1));
 on('bNext', 'click', () => go(S.cur + 1));
 on('bRotL', 'click', () => rotate90(false));
 on('bRotR', 'click', () => rotate90(true));
 on('bAuto', 'click', autoLevels);
+on('bPhotoBatch', 'click', () => setTool('batch'));
 on('bDel', 'click', deleteSel);
 on('bDup', 'click', duplicate);
 on('bSelAll', 'click', () => { S.sel = new Set(S.pages.map((p) => p.id)); refresh(false); });
@@ -1163,6 +1607,9 @@ document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () 
 }));
 for (const id of ['bright', 'contrast', 'quality']) on(id, 'input', (e) => { $({ bright: 'brV', contrast: 'ctV', quality: 'qV' }[id]).textContent = e.target.value; });
 for (const id of [...SET_FIELDS, ...SET_CHECKS, 'dev']) on(id, 'change', () => { saveSettings(); updateExportInfo(); });
+on('photoFmt', 'change', () => { updatePhotoCustom(); if (S.tool === 'photo') updateToolPanel(); });
+on('photoN', 'change', () => { if (S.tool === 'photo') { regridPhoto(+$('photoN').value); updateToolPanel(); draw(); } });
+for (const id of ['photoW', 'photoH']) on(id, 'input', () => { if ($('phInfo') && S.photo && S.photo.mesh) $('phInfo').textContent = photoInfoText(S.photo); });
 on('range', 'input', updateExportInfo);
 // os botões não ficam com o foco (para o teclado funcionar sempre)
 document.addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) b.blur(); });
@@ -1181,16 +1628,21 @@ window.addEventListener('drop', (e) => {
 
 // teclado
 document.addEventListener('keydown', (e) => {
-  if (!$('busy').classList.contains('hidden')) return;
+  if (!$('busy').classList.contains('hidden') || $('expDlg').open) return;
   const tag = (e.target.tagName || '').toUpperCase();
   const typing = (tag === 'INPUT' && /text|number/.test(e.target.type)) || tag === 'TEXTAREA';
   const k = e.key;
   if (e.ctrlKey && !e.shiftKey && k.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
   if (e.ctrlKey && (k.toLowerCase() === 'y' || (e.shiftKey && k.toLowerCase() === 'z'))) { e.preventDefault(); redo(); return; }
-  if (e.ctrlKey && k.toLowerCase() === 'e') { e.preventDefault(); doExport(); return; }
+  if (e.ctrlKey && k.toLowerCase() === 'e') { e.preventDefault(); openExportDialog(); return; }
   if (e.ctrlKey && k.toLowerCase() === 'o') { e.preventDefault(); $('fileIn').click(); return; }
   if (e.ctrlKey && k.toLowerCase() === 'a' && !typing) { e.preventDefault(); S.sel = new Set(S.pages.map((p) => p.id)); refresh(false); return; }
-  if (typing || tag === 'SELECT') { if (k === 'Enter' && S.tool === 'angle') rotateAngle(S.angle); return; }
+  if (typing || tag === 'SELECT') {
+    if (k === 'Enter' && S.tool === 'angle') rotateAngle(S.angle);
+    if (k === 'Enter' && S.tool === 'batch') runBatch();
+    if (k === 'Escape') { e.target.blur(); setTool('pan'); }
+    return;
+  }
   if (e.ctrlKey || e.altKey) return;
   switch (k) {
     case ' ': e.preventDefault(); doScan(); break;
@@ -1199,7 +1651,8 @@ document.addEventListener('keydown', (e) => {
     case 'Home': go(0); break;
     case 'End': go(S.pages.length - 1); break;
     case 'Delete': deleteSel(); break;
-    case 'Enter': if (S.tool === 'crop') applyCrop(); else if (S.tool === 'angle') rotateAngle(S.angle); break;
+    case 'Enter': if (S.tool === 'crop') applyCrop(); else if (S.tool === 'angle') rotateAngle(S.angle); else if (S.tool === 'photo') applyPhoto(); else if (S.tool === 'batch') runBatch(); break;
+    case 'p': case 'P': setTool(e.shiftKey ? 'batch' : 'photo'); break;
     case 'Escape': setTool('pan'); break;
     case 'r': case 'R': rotate90(true); break;
     case 'l': case 'L': rotate90(false); break;
@@ -1249,6 +1702,7 @@ setInterval(() => api('ping').catch(() => {}), 20000);
     if (info.os === 'linux') $('scanHint').textContent = 'As páginas novas entram a seguir à página atual. Em Linux usa o SANE (sane-utils; sane-airscan para scanners de rede).';
   } catch (e) {}
   await loadSettings();
+  refreshSys();
   refresh();
   await checkDeps();
   await loadDevices();

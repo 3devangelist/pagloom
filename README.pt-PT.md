@@ -28,6 +28,7 @@
 - **Ver as páginas à medida que vão sendo digitalizadas**, com a página anterior ao lado da atual quando for útil.
 - **Corrigir as páginas**: rodar por qualquer ângulo, endireitar, recortar e acertar o branco e o preto.
 - **Juntar PDFs e imagens** às digitalizações e **mudar as páginas de sítio**.
+- **Transformar fotos do telefone em páginas**: encontra a folha, corrige a perspetiva e a curvatura e põe a página no tamanho real.
 - **Exportar** para PDF, PNG, JPEG, TIFF ou SVG, com a resolução escolhida.
 
 Na prática, resolve num só programa a digitalização e os problemas habituais com PDFs: juntar, reordenar, rodar, recortar e apagar páginas.
@@ -55,6 +56,8 @@ Na prática, resolve num só programa a digitalização e os problemas habituais
 | Recortar | C | Marcar a área a manter, ajustar pelos cantos, Enter para aplicar |
 | Ângulo | A | Rodar por qualquer ângulo (passos de 0,1°), com grelha para alinhar |
 | Endireitar | T | Desenhar uma linha ao longo do texto ou da margem; a página fica direita |
+| Foto → página | P | Encontra a folha numa foto e corrige a perspetiva, a curvatura das bordas e o tamanho (ver abaixo) |
+| Lote | Shift+P | Foto → página num intervalo de páginas (da página X à Y), várias ao mesmo tempo |
 | Ponto branco | W | Clicar numa zona que devia ser branca; as cores são corrigidas a partir daí |
 | Ponto preto | K | Clicar numa zona que devia ser preta |
 | Auto níveis | — | Correção automática de branco e preto nas páginas selecionadas |
@@ -62,14 +65,30 @@ Na prática, resolve num só programa a digitalização e os problemas habituais
 
 ### Adicionar PDFs e imagens
 - Botão **Adicionar PDF / imagens** (Ctrl+O), ou arrastar ficheiros do explorador para a janela.
-- Aceita PDF, PNG, JPEG, WEBP, GIF e BMP. PDFs protegidos pedem a palavra-passe.
+- Aceita PDF, PNG, JPEG, HEIC/HEIF (fotos do iPhone), WEBP, GIF e BMP. PDFs protegidos pedem a palavra-passe.
+- As fotos entram já na posição certa (orientação EXIF do telefone).
 - **As páginas PDF continuam vetoriais** (texto selecionável) quando são movidas, rodadas 90° ou recortadas.
 - Ângulo livre, endireitar e níveis convertem essa página em imagem, à resolução escolhida no separador **Página** (300 ppp por omissão).
+
+### Fotos do telefone → página
+1. Adiciona a foto e carrega em **Foto → página** (tecla P).
+2. O programa procura a folha na foto, **em resolução total**, e coloca uma **grelha de pontos** (4 × 4 por omissão; 3 × 3 até 8 × 8):
+   - **Cantos:** cruzamento de retas ajustadas só pelo meio de cada borda. Um canto dobrado ou em falta não puxa a borda.
+   - **Só deformação e recorte:** a página final são os pixels da foto reamostrados para a página direita. Não há pintura, nem correção de cores ou níveis. O que faltar na foto aparece tal como foi fotografado.
+   - **Deformar o mínimo:** por omissão só corrige a perspetiva. A curvatura só entra quando o **conteúdo** a confirma: as linhas de texto e as linhas impressas (horizontais) e as margens, colunas e linhas de tabelas (verticais) eram retas no papel.
+   - **Validação:** compara "só perspetiva" com "perspetiva + correção pelo conteúdo" e fica com a mais simples que deixa o texto direito. Mostra a **confiança** (alta, média ou baixa) e porquê. Com "mostrar análise" vês a verde onde as linhas foram medidas.
+3. Se for preciso, arrasta qualquer ponto. Aparece uma lupa para acertar com precisão, e Ctrl+roda aproxima a imagem.
+4. **Formato da folha**: *Automático* calcula a proporção real pela perspetiva e escolhe A4, Carta ou Ofício. Também se pode escolher A3, A4, A5, A6, Carta, Ofício ou **Outra medida** em mm, para livros fora de medida.
+5. **Enter** aplica. A página fica direita, com o tamanho em mm certo e a resolução (ppp) que a foto permite, sem reduzir a imagem.
+6. No separador **Página**, a opção **Endireitar logo as fotos ao adicionar** faz isto automaticamente a todas as fotos JPEG e HEIC, várias ao mesmo tempo (uma por núcleo do processador). As fotos com confiança baixa ficam como estavam, para corrigires à mão. O número de fotos em paralelo ajusta-se ao PC: núcleos, memória livre e tamanho das fotos. Num PC modesto trata menos de cada vez e, se faltar memória, baixa o número e repete a foto. Também se pode fixar à mão em **Fotos em paralelo**.
+
+A deteção também funciona em fundos com textura, como toalhas de renda, tecido ou madeira. Como o papel é liso, a borda escolhida é a mais exterior que tem papel liso logo do lado de dentro.
 
 ### Exportar
 1. Separador **Exportar**: escolher o formato, as páginas (todas, selecionadas, atual ou intervalo, por ex. `1-3, 5`) e a **resolução de exportação**.
 2. Opções do PDF: manter as páginas PDF originais e guardar as imagens em JPEG (com qualidade ajustável) ou sem perdas (PNG).
 3. **Exportar…** abre a janela "Guardar como". No fim aparece o link **mostrar na pasta**.
+4. O botão **Exportar** de cima (ou Ctrl+E) pergunta primeiro o formato, as páginas e a resolução, e depois abre o "Guardar como" para escolheres a pasta e o nome.
 
 | Formato | Resultado |
 |---|---|
@@ -78,6 +97,8 @@ Na prática, resolve num só programa a digitalização e os problemas habituais
 | PNG / JPEG / SVG | Um ficheiro por página (`nome_001`, `nome_002`, …) |
 
 A resolução de exportação só reduz: nunca aumenta acima da resolução digitalizada. Os ficheiros PNG, JPEG e TIFF guardam a resolução (ppp) correta, para imprimirem no tamanho real.
+
+Ao fechar a janela com páginas que ainda não foram exportadas, o programa pergunta se quer mesmo fechar.
 
 ---
 
@@ -137,7 +158,7 @@ O script cria em `dist/`:
 - `Pagloom.exe` (Windows x86_64)
 - `Pagloom-x86_64.AppImage` e `Pagloom-aarch64.AppImage` (Linux)
 
-Na primeira vez, o script descarrega as bibliotecas JavaScript (`fetch-libs.sh`: pdf.js e pdf-lib, do registo npm, para `web/lib/`), as dependências Go (`go mod tidy`), e o `appimagetool` com os runtimes do AppImage para `build/tools/`.
+Na primeira vez, o script descarrega as bibliotecas JavaScript (`fetch-libs.sh`: pdf.js, pdf-lib, OpenCV.js e libheif, do registo npm, para `web/lib/`), as dependências Go (`go mod tidy`), e o `appimagetool` com os runtimes do AppImage para `build/tools/`.
 
 Só para Windows, também a partir de Windows:
 ```bash
@@ -148,7 +169,13 @@ go build -trimpath -ldflags "-H windowsgui -s -w" -o Pagloom.exe .
 
 As Releases são criadas automaticamente pelo GitHub Actions (`.github/workflows/release.yml`): ao enviar uma tag como `v1.1.0`, o workflow compila os três ficheiros e publica a Release.
 
-Para testar a interface sem scanner, há um scanner simulado:
+Para testar a interface **sem compilar** (só precisa do Node.js e das bibliotecas em `web/lib/`):
+```bash
+node dev-server.js        # ou, no Windows, duplo clique em testar-interface.bat
+```
+Abre `http://127.0.0.1:8765/` no browser. Não há scanner. Exportar abre a janela "Guardar como" do Windows (noutros sistemas grava em `dev-out/`). O resto da interface funciona como no programa.
+
+Para testar a interface sem scanner, também com o programa em Go, há um scanner simulado:
 ```bash
 bash fetch-libs.sh
 PAGLOOM_MOCK=1 go run .
@@ -165,7 +192,10 @@ ui_linux.go        janela, "Guardar como" e "mostrar na pasta" no Linux
 deps_linux.go      deteção e instalação das dependências (apt, dnf, zypper, pacman)
 mock.go            scanner simulado para testes
 web/               interface (index.html, style.css, app.js); web/lib/ é preenchida pelo fetch-libs.sh
-fetch-libs.sh      descarrega o pdf.js e o pdf-lib
+web/photo.js       fotos → página: deteção da folha, grelha de pontos, correção da perspetiva e da curvatura
+web/photo-worker.js  corre o photo.js noutros núcleos do processador (Web Workers)
+fetch-libs.sh      descarrega o pdf.js, o pdf-lib, o OpenCV.js e o libheif
+dev-server.js      servidor para testar a interface sem compilar (testar-interface.bat no Windows)
 build.sh           compilação e criação dos AppImages
 pagloom.svg        logotipo (original); pagloom.png / pagloom.ico / icons/ são gerados a partir dele
 rsrc_windows_amd64.syso  recurso de ícone do Windows, incluído no Pagloom.exe
@@ -186,6 +216,8 @@ docs/              capturas de ecrã e imagem de pré-visualização
 | **SANE / scanimage** | Driver de scanners do Linux |
 | **pdf.js** (Mozilla, Apache-2.0) | Ler e mostrar PDFs |
 | **pdf-lib** (MIT) | Criar PDFs, copiar páginas vetoriais, rodar e recortar |
+| **OpenCV.js** (Apache-2.0) | Encontrar a folha nas fotos e corrigir a imagem (remap bicúbico) |
+| **libheif-js** (LGPL-3.0) | Abrir fotos HEIC/HEIF do iPhone |
 | **HTML5 Canvas** | Rotação, recorte, níveis, miniaturas |
 | **zenity / kdialog / pkexec** | Janelas do Linux ("Guardar como", perguntas, palavra-passe) |
 | **appimagetool** | Criação dos AppImages |
@@ -199,8 +231,7 @@ docs/              capturas de ecrã e imagem de pré-visualização
 
 ### Limitações conhecidas
 - Testado com scanner simulado. Ainda falta confirmar com a EPSON ET-2850 real.
-- Fechar a janela sem exportar perde as páginas, porque ainda não há aviso.
-- Não importa ficheiros TIFF, só os exporta. (Alternativa: abrir o TIFF no Fotografias do Windows ou no visualizador de imagens do Linux, gravar como PNG e arrastar o PNG para o Pagloom.)
+- Foto → página: testado com 24 fotos reais (folhas sobre uma toalha de renda): 22 com confiança alta ou média e o texto direito a 0,15–0,5 mm. As outras 2 ficam assinaladas para correção à mão. A proporção calculada pela perspetiva pode errar até ~8%; por isso o modo automático prefere A4, e noutros formatos convém escolhê-lo.
 - Ainda não há versão para macOS.
 
 ---
@@ -237,6 +268,8 @@ docs/              capturas de ecrã e imagem de pré-visualização
 22. Documentação em **inglês**, e publicação no GitHub, na conta **3devangelist**.
 23. Extras no GitHub: compilação automática das Releases (GitHub Actions), capturas de ecrã, tópicos, imagem de pré-visualização, modelos de Issues e changelog.
 24. Um logotipo (monograma **P** com um fio entrelaçado), em SVG, usado como ícone em todas as versões.
+25. **Aviso ao fechar** a janela com páginas por exportar. A importação de TIFF fica de fora.
+26. **Fotos do telefone → página**: detetar a folha sem reduzir a foto, corrigir a perspetiva (paralaxe) e a curvatura com uma **grelha de pontos** (4 × 4 ou mais, não só 4 cantos), pôr a página em **verdadeira grandeza** (formatos normais e **medidas personalizadas**) e abrir **fotos HEIC**.
 
 **Regras gerais**
 
@@ -256,4 +289,4 @@ Encontraste um erro ou tens uma ideia? Abre uma [issue](https://github.com/3deva
 Distribuído sob a licença **MIT**. Ver [`LICENSE`](LICENSE).
 © 2026 Ricardo Pereira.
 
-As bibliotecas incluídas têm as suas próprias licenças (Apache-2.0, MIT, ISC, BSD-3-Clause). Ver [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+As bibliotecas incluídas têm as suas próprias licenças (Apache-2.0, MIT, ISC, BSD-3-Clause, LGPL-3.0). Ver [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

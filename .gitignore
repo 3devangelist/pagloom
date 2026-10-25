@@ -4,3 +4,4 @@
 *.AppImage
 *.zip
 /web/lib/
+/dev-out/

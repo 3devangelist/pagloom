@@ -108,6 +108,31 @@ func reveal(path string) {
 	command("xdg-open", filepath.Dir(path)).Start()
 }
 
+// Memória física total e disponível, em bytes (de /proc/meminfo; para decidir quantas fotos tratar em paralelo)
+func memInfo() (total, avail uint64) {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line) // "MemTotal:  16299764 kB"
+		if len(f) < 2 {
+			continue
+		}
+		var kb uint64
+		if _, err := fmt.Sscan(f[1], &kb); err != nil {
+			continue
+		}
+		switch f[0] {
+		case "MemTotal:":
+			total = kb * 1024
+		case "MemAvailable:":
+			avail = kb * 1024
+		}
+	}
+	return total, avail
+}
+
 func documentsDir() string {
 	if out, err := command("xdg-user-dir", "DOCUMENTS").Output(); err == nil {
 		if d := strings.TrimSpace(string(out)); d != "" {

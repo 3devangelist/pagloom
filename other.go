@@ -12,3 +12,4 @@ func runWindow(url string) bool                                     { return fal
 func listDevices() ([]Device, error)                                { return mockDevices() }
 func scan(o ScanOptions) ([]ScannedPage, error)                     { return mockScan(o) }
 func saveDialog(name, ext, desc, dir string) (string, bool, string) { return "", false, "" }
+func memInfo() (total, avail uint64)                                { return 0, 0 }

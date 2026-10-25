@@ -27,8 +27,27 @@ var (
 	pGetSaveFile   = comdlg32.NewProc("GetSaveFileNameW")
 	pShellExecute  = shell32.NewProc("ShellExecuteW")
 	pSetForeground = user32.NewProc("SetForegroundWindow")
+	pSetWndLong    = user32.NewProc("SetWindowLongPtrW")
+	pCallWndProc   = user32.NewProc("CallWindowProcW")
 	mainHwnd       uintptr
+	origWndProc    uintptr
+	closeHookCb    = syscall.NewCallback(closeHook)
 )
+
+// Antes de fechar a janela (X, Alt+F4), pergunta se há páginas por exportar.
+func closeHook(hwnd, msg, wp, lp uintptr) uintptr {
+	const wmClose = 0x0010
+	if msg == wmClose && unsaved.Load() {
+		text := "Há páginas que ainda não foram exportadas.\n\nSe fechares agora, perdes essas páginas. Fechar mesmo assim?"
+		r, _, _ := pMessageBox.Call(hwnd, uintptr(unsafe.Pointer(u16(text))), uintptr(unsafe.Pointer(u16("Pagloom"))),
+			0x4|0x30|0x100) // MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+		if r != 6 { // IDYES
+			return 0
+		}
+	}
+	r, _, _ := pCallWndProc.Call(origWndProc, hwnd, msg, wp, lp)
+	return r
+}
 
 func u16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
 
@@ -56,6 +75,8 @@ func runWindow(url string) bool {
 	}
 	defer w.Destroy()
 	mainHwnd = uintptr(w.Window())
+	gwlpWndProc := -4
+	origWndProc, _, _ = pSetWndLong.Call(mainHwnd, uintptr(gwlpWndProc), closeHookCb)
 	pShowWindow.Call(mainHwnd, 3) // maximizar
 	w.Navigate(url)
 	w.Run()
@@ -182,3 +203,26 @@ func openURL(url string) {
 }
 
 var _ = pSetForeground
+
+type memoryStatusEx struct {
+	dwLength                uint32
+	dwMemoryLoad            uint32
+	ullTotalPhys            uint64
+	ullAvailPhys            uint64
+	ullTotalPageFile        uint64
+	ullAvailPageFile        uint64
+	ullTotalVirtual         uint64
+	ullAvailVirtual         uint64
+	ullAvailExtendedVirtual uint64
+}
+
+var pGlobalMemoryStatusEx = syscall.NewLazyDLL("kernel32.dll").NewProc("GlobalMemoryStatusEx")
+
+// Memória física total e disponível, em bytes (para decidir quantas fotos tratar em paralelo)
+func memInfo() (total, avail uint64) {
+	m := memoryStatusEx{dwLength: uint32(unsafe.Sizeof(memoryStatusEx{}))}
+	if r, _, _ := pGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&m))); r == 0 {
+		return 0, 0
+	}
+	return m.ullTotalPhys, m.ullAvailPhys
+}

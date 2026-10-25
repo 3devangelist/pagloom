@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +32,7 @@ var (
 	okDirs   = map[string]bool{} // pastas escolhidas pelo utilizador (escrita permitida)
 	lastPing = time.Now()
 	pingMu   sync.Mutex
+	unsaved  atomic.Bool // há páginas que ainda não foram exportadas (aviso ao fechar)
 )
 
 func randHex(n int) string {
@@ -82,8 +84,14 @@ func api(w http.ResponseWriter, r *http.Request) {
 		pingMu.Unlock()
 		writeJSON(w, map[string]bool{"ok": true})
 
+	case p == "unsaved":
+		unsaved.Store(q.Get("v") == "1")
+		writeJSON(w, map[string]bool{"ok": true})
+
 	case p == "info":
-		writeJSON(w, map[string]interface{}{"os": runtime.GOOS, "driverUI": runtime.GOOS == "windows"})
+		total, avail := memInfo()
+		writeJSON(w, map[string]interface{}{"os": runtime.GOOS, "driverUI": runtime.GOOS == "windows",
+			"cpus": runtime.NumCPU(), "memTotal": total, "memAvail": avail})
 
 	case p == "deps":
 		writeJSON(w, depsStatus())
